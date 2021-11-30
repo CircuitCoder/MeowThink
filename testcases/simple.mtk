@@ -1,0 +1,15 @@
+let nat : ind type
+  = def type {
+    0 : self;
+    succ : self -> self;
+  };
+
+let plus : nat -> nat -> nat
+  = !todo;
+
+let vector
+  = \(T: Type) =>
+    def (nat -> type) {
+      nil : self 0;
+      con : (pl: nat) -> T -> self pl -> self (succ pl);
+    };

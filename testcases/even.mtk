@@ -1,0 +1,19 @@
+let nat: ind type
+  = def type {
+    0 : self;
+    succ : self -> self;
+  };
+
+let double : nat -> nat
+  = \x, rec double => match x {
+    0 => 0;
+    succ s => succ (succ (double s));
+  };
+
+let isEven : ind (nat -> type)
+  = def (nat -> type) {
+    even0 : self 0;
+    evenSS : (n: nat) -> self n -> self (succ (succ n));
+  };
+
+!pass
