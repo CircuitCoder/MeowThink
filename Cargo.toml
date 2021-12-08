@@ -7,6 +7,9 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0.49"
+env_logger = "0.9.0"
+im = "15.0.0"
+log = "0.4.14"
 paw = "1.0.0"
 structopt = "0.3.25"
 thiserror = "1.0.30"

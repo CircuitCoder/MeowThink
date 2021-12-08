@@ -1,0 +1,16 @@
+let nat : type 0
+  = ind {
+    0 : self;
+    S: self -> self;
+  };
+
+let plus : nat -> nat -> nat
+  = \a, rec r => \b => match a {
+    0 / _ => b;
+    S x / _ => r x (nat#S b);
+  };
+
+let 1 : nat = nat#S nat#0;
+let 2 : nat = nat#S 1;
+
+plus nat#0 2

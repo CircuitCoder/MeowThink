@@ -1,11 +1,14 @@
-let nat : ind type
-  = def type {
+let nat : type 0
+  = ind {
     0 : self;
-    succ : self -> self;
+    S: self -> self;
   };
 
 let plus : nat -> nat -> nat
-  = !todo;
+  = \a, rec r => \b => match a {
+    0 / _ => b,
+    S x / _ => r x (S b)
+  };
 
 let vector
   = \(T: Type) =>

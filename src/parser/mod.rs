@@ -5,9 +5,9 @@ use std::iter::Peekable;
 
 use thiserror::Error;
 
-use crate::lexer::{Token, TokenInner};
+use crate::{data::Expr, lexer::{Token, TokenInner}};
 
-use self::expr::{RawExpr, parse_expr};
+use self::expr::parse_expr;
 
 
 #[derive(Error, Debug)]
@@ -24,6 +24,11 @@ pub enum ParseError<'a> {
 
     #[error("Malformed attribute: {token:?}")]
     MalformedAttr {
+        token: Token<'a>,
+    },
+
+    #[error("Malformed attribute: {token:?}")]
+    MalformedUniverse {
         token: Token<'a>,
     },
 
@@ -53,6 +58,15 @@ fn parse_str<'a, I: Iterator<Item = Token<'a>>>(tokens: &mut Peekable<I>) -> Par
     }
 }
 
-pub fn parse<'a, I: Iterator<Item = Token<'a>>>(tokens: &mut Peekable<I>) -> ParseResult<'a, RawExpr<'a>> {
+fn parse_level<'a, I: Iterator<Item = Token<'a>>>(tokens: &mut Peekable<I>) -> ParseResult<'a, Option<usize>> {
+    let token = tokens.next().ok_or(ParseError::SoftEOF)?;
+    match token.inner {
+        TokenInner::Symb("_") => Ok(None),
+        TokenInner::Word(s) => s.parse::<usize>().map_err(|_| ParseError::MalformedUniverse{ token }).map(Some),
+        _ => Err(ParseError::MalformedUniverse{ token }),
+    }
+}
+
+pub fn parse<'a, I: Iterator<Item = Token<'a>>>(tokens: &mut Peekable<I>) -> ParseResult<'a, Expr<'a, ()>> {
     parse_expr(tokens, isize::MIN)
 }

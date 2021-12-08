@@ -1,83 +1,12 @@
 use std::iter::Peekable;
 
-use crate::lexer::{Token, TokenInner};
+use crate::{data::*, lexer::{Token, TokenInner, Keyword}};
 
-use super::{ParseError, ParseResult, ind::{RawCtor, parse_ctors}, parse_single, parse_str};
-
-#[derive(Debug)]
-pub enum RawExpr<'a> {
-    // Type of type (sort-of?)
-    IndType(Box<RawExpr<'a>>),
-    PartialType(Box<RawExpr<'a>>),
-
-    // Type
-    Def {
-        sig: Box<RawExpr<'a>>,
-        ctors: Vec<RawCtor<'a>>,
-    },
-    Fn(RawFn<'a>),
-
-    // Other "Non-types"
-    Lambda {
-        // Currently only with one argument
-        arg: Box<RawName<'a>>,
-        ret: Option<Box<RawExpr<'a>>>,
-        body: Box<RawExpr<'a>>,
-
-        rec: Option<&'a str>,
-        partial: bool,
-    },
-    Binding {
-        binding: Box<RawBinding<'a>>,
-        rest: Box<RawExpr<'a>>,
-    },
-    Name(Box<RawName<'a>>),
-    Ap(Box<(RawExpr<'a>, RawExpr<'a>)>),
-    Macro(&'a str),
-    Match {
-        matched: Box<RawExpr<'a>>,
-        arms: Vec<RawMatchArm<'a>>,
-    }
-}
-
-#[derive(Debug)]
-pub struct RawName<'a> {
-    pub name: &'a str,
-    pub sig: Option<RawExpr<'a>>,
-}
-
-#[derive(Debug)]
-pub struct RawBinding<'a> {
-    name: RawName<'a>,
-    val: RawExpr<'a>,
-}
-
-#[derive(Debug)]
-pub struct RawFn<'a> {
-    input: Box<RawExpr<'a>>,
-    output: Box<RawExpr<'a>>,
-}
-
-#[derive(Debug)]
-pub struct RawMatchArm<'a> {
-    ctor: &'a str,
-    data: Vec<&'a str>,
-    ev: Vec<RawName<'a>>,
-    body: RawExpr<'a>,
-}
-
-fn binding_power_unary(op: &str) -> Option<isize> {
-    match op {
-        // ind 100
-        "partial" => Some(90),
-        // def 80
-        // match 70
-        _ => None,
-    }
-}
+use super::{ParseError, ParseResult, ind::parse_ctors, parse_single, parse_str, parse_level};
 
 fn binding_power_bin(op: &str) -> Option<(isize, isize)> {
     match op {
+        // # => 100
         "/" => Some((-9, -10)),
         "->" => Some((-19, -20)),
         ":" => Some((-29, -30)),
@@ -87,13 +16,13 @@ fn binding_power_bin(op: &str) -> Option<(isize, isize)> {
     }
 }
 
-pub fn parse_expr<'a, I: Iterator<Item = Token<'a>>>(tokens: &mut Peekable<I>, power: isize) -> ParseResult<'a, RawExpr<'a>> {
+pub fn parse_expr<'a, I: Iterator<Item = Token<'a>>>(tokens: &mut Peekable<I>, power: isize) -> ParseResult<'a, Expr<'a, ()>> {
     let first = tokens.next().ok_or(ParseError::SoftEOF)?;
     let mut lhs = match first.inner {
         TokenInner::SemiColon | TokenInner::ParenRight | TokenInner::BracketRight | TokenInner::BracketLeft | TokenInner::Comma => {
             return Err(ParseError::UnexpectedToken{ token: first });
         }
-        TokenInner::Macro(m) => RawExpr::Macro(m),
+        TokenInner::Macro(m) => panic!("Macro expansion not yet implemented"),
         TokenInner::ParenLeft => {
             // Step after the paren
             let inner = parse_expr(tokens, isize::MIN)?;
@@ -104,46 +33,57 @@ pub fn parse_expr<'a, I: Iterator<Item = Token<'a>>>(tokens: &mut Peekable<I>, p
                 inner
             }
         },
-        TokenInner::Symb(op) | TokenInner::Word(op) => {
-            if op == "let" {
+        TokenInner::Keyword(kw) => match kw {
+            // TODO: check for binding power for keywords, and update binding power
+            Keyword::Let => {
                 let binding = Box::new(parse_binding_tail(tokens)?);
                 let rest = Box::new(parse_expr(tokens, power)?);
-                RawExpr::Binding {
+                ExprInner::Binding {
                     binding,
                     rest,
-                }
-            } else if op == "ind" {
-                let inner = parse_expr(tokens, 100)?;
-                RawExpr::IndType(Box::new(inner))
-            } else if op == "partial" {
+                }.with(())
+            },
+            Keyword::Partial => {
                 let inner = parse_expr(tokens, 90)?;
-                RawExpr::PartialType(Box::new(inner))
-            } else if op == "def" {
-                let sig = Box::new(parse_expr(tokens, 80)?);
+                ExprInner::PartialType(Box::new(inner)).with(())
+            },
+            Keyword::Ind => {
+                let peek = tokens.peek();
+                let sig = if peek.is_none() || peek.unwrap().inner != TokenInner::BracketLeft {
+                    Some(Box::new(parse_expr(tokens, 80)?))
+                } else {
+                    None
+                };
                 let ctors = parse_ctors(tokens)?;
-                RawExpr::Def {
+                ExprInner::Ind {
                     sig,
                     ctors,
-                }
-            } else if op == "\\" {
-                parse_lambda_tail(tokens)?
-            } else if op == "match" {
+                }.with(())
+            },
+            Keyword::Match => {
                 let matched = Box::new(parse_expr(tokens, 70)?);
                 let arms = parse_match_body(tokens)?;
 
-                RawExpr::Match {
+                ExprInner::Match {
                     matched,
                     arms,
-                }
-            } else if let Some(bp) = binding_power_unary(op) {
-                let inner = parse_expr(tokens, bp)?;
-                inner
+                }.with(())
+            },
+            Keyword::Type => {
+                let level = parse_level(tokens)?;
+                ExprInner::Universe { level }.with(())
+            },
+            Keyword::SelfType => ExprInner::SelfInvoc.with(()),
+        },
+        TokenInner::Symb(op) | TokenInner::Word(op) => {
+            if op == "\\" {
+                parse_lambda_tail(tokens)?
             } else {
                 // Is a single word
-                RawExpr::Name(Box::new(RawName {
+                ExprInner::Name(Box::new(Name {
                     name: op,
                     sig: None,
-                }))
+                })).with(())
             }
         }
     };
@@ -160,7 +100,14 @@ pub fn parse_expr<'a, I: Iterator<Item = Token<'a>>>(tokens: &mut Peekable<I>, p
                 break;
             }
             TokenInner::Symb(op) | TokenInner::Word(op) => {
-                if let Some((lbp, rbp)) = binding_power_bin(op) {
+                if op == "#" {
+                    let token = tokens.next().unwrap();
+                    is_binary = true;
+                    lhs = ExprInner::CtorOf {
+                        parent: Box::new(lhs),
+                        variant: parse_str(tokens)?,
+                    }.with(());
+                } else if let Some((lbp, rbp)) = binding_power_bin(op) {
                     is_binary = true;
                     if lbp < power {
                         break;
@@ -171,13 +118,14 @@ pub fn parse_expr<'a, I: Iterator<Item = Token<'a>>>(tokens: &mut Peekable<I>, p
 
                     match op {
                         "->" => {
-                            lhs = RawExpr::Fn(RawFn {
+                            lhs = ExprInner::Fun(Fun {
                                 input: Box::new(lhs),
                                 output: Box::new(rhs),
-                            });
+                            }).with(());
                         },
                         ":" => {
-                            if let RawExpr::Name(ref mut name) = lhs {
+                            // TODO: let's do this more sophicately
+                            if let ExprInner::Name(ref mut name) = lhs.inner {
                                 if name.sig.is_some() {
                                     return Err(ParseError::UnexpectedToken{ token });
                                 }
@@ -201,14 +149,14 @@ pub fn parse_expr<'a, I: Iterator<Item = Token<'a>>>(tokens: &mut Peekable<I>, p
             }
 
             let rhs = parse_expr(tokens, 1)?;
-            lhs = RawExpr::Ap(Box::new((lhs, rhs)));
+            lhs = ExprInner::Ap(Box::new((lhs, rhs))).with(());
         }
     }
 
     Ok(lhs)
 }
 
-pub fn parse_capture_group<'a, I: Iterator<Item = Token<'a>>>(tokens: &mut Peekable<I>) -> ParseResult<'a, RawName<'a>> {
+pub fn parse_capture_group<'a, I: Iterator<Item = Token<'a>>>(tokens: &mut Peekable<I>) -> ParseResult<'a, Name<'a, ()>> {
     let contains_paren = match tokens.peek() {
         None => return Err(ParseError::EOF),
         Some(t) => match t.inner {
@@ -234,13 +182,13 @@ pub fn parse_capture_group<'a, I: Iterator<Item = Token<'a>>>(tokens: &mut Peeka
         parse_single(tokens, TokenInner::ParenRight)?;
     }
 
-    Ok(RawName {
+    Ok(Name {
         name, sig
     })
 }
 
 
-pub fn parse_lambda_tail<'a, I: Iterator<Item = Token<'a>>>(tokens: &mut Peekable<I>) -> ParseResult<'a, RawExpr<'a>> {
+pub fn parse_lambda_tail<'a, I: Iterator<Item = Token<'a>>>(tokens: &mut Peekable<I>) -> ParseResult<'a, Expr<'a, ()>> {
     let arg = Box::new(parse_capture_group(tokens)?);
     // Parse result value
     let ret = if tokens.peek().map(|t| t.inner == TokenInner::Symb("->")) == Some(true) {
@@ -250,7 +198,6 @@ pub fn parse_lambda_tail<'a, I: Iterator<Item = Token<'a>>>(tokens: &mut Peekabl
         None
     };
 
-    let mut partial = false;
     let mut rec = None;
     while tokens.peek().map(|t| t.inner == TokenInner::Comma) == Some(true) {
         tokens.next();
@@ -279,9 +226,6 @@ pub fn parse_lambda_tail<'a, I: Iterator<Item = Token<'a>>>(tokens: &mut Peekabl
         };
 
         match directive {
-            "partial" if attr.len() == 0 => {
-                partial = true;
-            },
             "rec" if attr.len() == 1 => {
                 rec = Some(attr[0]);
             },
@@ -291,17 +235,16 @@ pub fn parse_lambda_tail<'a, I: Iterator<Item = Token<'a>>>(tokens: &mut Peekabl
 
     parse_single(tokens, TokenInner::Symb("=>"))?;
     let body = Box::new(parse_expr(tokens, -40)?);
-    Ok(RawExpr::Lambda {
+    Ok(ExprInner::Lambda {
         arg,
         ret,
         body,
 
         rec,
-        partial,
-    })
+    }.with(()))
 }
 
-pub fn parse_binding_tail<'a, I: Iterator<Item = Token<'a>>>(tokens: &mut Peekable<I>) -> ParseResult<'a, RawBinding<'a>> {
+pub fn parse_binding_tail<'a, I: Iterator<Item = Token<'a>>>(tokens: &mut Peekable<I>) -> ParseResult<'a, Binding<'a, ()>> {
     let name = parse_str(tokens)?;
     let mut sig = None;
     if let Some(t) = tokens.next() {
@@ -323,8 +266,8 @@ pub fn parse_binding_tail<'a, I: Iterator<Item = Token<'a>>>(tokens: &mut Peekab
     let val = parse_expr(tokens, -49)?;
     parse_single(tokens, TokenInner::SemiColon)?;
 
-    Ok(RawBinding {
-        name: RawName {
+    Ok(Binding {
+        name: Name {
             name,
             sig,
         },
@@ -332,17 +275,19 @@ pub fn parse_binding_tail<'a, I: Iterator<Item = Token<'a>>>(tokens: &mut Peekab
     })
 }
 
-pub fn parse_match_arm<'a, I: Iterator<Item = Token<'a>>>(tokens: &mut Peekable<I>) -> ParseResult<'a, RawMatchArm<'a>> {
+pub fn parse_match_arm<'a, I: Iterator<Item = Token<'a>>>(tokens: &mut Peekable<I>) -> ParseResult<'a, MatchArm<'a, ()>> {
     let ctor = parse_str(tokens)?;
     let mut data = Vec::new();
     let mut ev = Vec::new();
+    let mut sig = None;
+
     loop {
-        let peek = tokens.peek();
         match tokens.peek() {
             None => break,
             Some(token) => match token.inner {
                 TokenInner::Symb("/") => break,
                 TokenInner::Symb("=>") => break,
+                TokenInner::Symb("->") => break,
                 _ => {}
             },
         }
@@ -350,49 +295,52 @@ pub fn parse_match_arm<'a, I: Iterator<Item = Token<'a>>>(tokens: &mut Peekable<
         data.push(parse_str(tokens)?);
     }
 
-    match tokens.next() {
-        None => return Err(ParseError::EOF),
-        Some(token) => match token.inner {
-            TokenInner::Symb("/") => {
-                // Parse evidences
-                loop {
-                    let peek = tokens.peek();
-                    match tokens.peek() {
-                        None => break,
-                        Some(token) => match token.inner {
-                            TokenInner::Symb("=>") => break,
-                            _ => {}
-                        },
-                    }
+    loop {
+        match tokens.next() {
+            None => return Err(ParseError::EOF),
+            Some(token) => match token.inner {
+                TokenInner::Symb("/") => {
+                    // Parse evidences
+                    loop {
+                        match tokens.peek() {
+                            None => break,
+                            Some(token) => match token.inner {
+                                TokenInner::Symb("=>") => break,
+                                TokenInner::Symb("->") => break,
+                                _ => {}
+                            },
+                        }
 
-                    ev.push(parse_capture_group(tokens)?);
-                }
-                parse_single(tokens, TokenInner::Symb("=>"))?;
-            },
-            TokenInner::Symb("=>") => {}
-            _ => return Err(ParseError::UnexpectedToken{ token }),
+                        ev.push(parse_capture_group(tokens)?);
+                    }
+                },
+                TokenInner::Symb("->") => {
+                    sig = Some(parse_expr(tokens, 41)?);
+                },
+                TokenInner::Symb("=>") => break,
+                _ => return Err(ParseError::UnexpectedToken{ token }),
+            }
         }
     }
 
-    println!("Parsing match body with ctor {}", ctor);
     let body = parse_expr(tokens, -49)?;
     parse_single(tokens, TokenInner::SemiColon)?;
-    Ok(RawMatchArm {
+    Ok(MatchArm {
         ctor,
         data,
         ev,
+        sig,
         body,
     })
 }
 
-pub fn parse_match_body<'a, I: Iterator<Item = Token<'a>>>(tokens: &mut Peekable<I>) -> ParseResult<'a, Vec<RawMatchArm<'a>>> {
+pub fn parse_match_body<'a, I: Iterator<Item = Token<'a>>>(tokens: &mut Peekable<I>) -> ParseResult<'a, Vec<MatchArm<'a, ()>>> {
     parse_single(tokens, TokenInner::BracketLeft)?;
 
     let mut arms = Vec::new();
 
     // TODO: write a combinator: do_until
     loop {
-        let peek = tokens.peek();
         match tokens.peek() {
             None => break,
             Some(token) => match token.inner {

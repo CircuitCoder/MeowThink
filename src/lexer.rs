@@ -17,11 +17,37 @@ pub enum TokenInner<'a> {
 
     // TODO: comments
 
+    Keyword(Keyword),
+
     /// Any other alphanumerical word
     Word(&'a str),
 
     /// Any other symbol combination
     Symb(&'a str),
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum Keyword {
+    Let,
+    Ind,
+    Partial,
+    Type,
+    Match,
+    SelfType,
+}
+
+impl Keyword {
+    pub fn from_str(s: &str) -> Option<Keyword> {
+        match s {
+            "ind" => Some(Self::Ind),
+            "partial" => Some(Self::Partial),
+            "let" => Some(Self::Let),
+            "type" => Some(Self::Type),
+            "match" => Some(Self::Match),
+            "self" => Some(Self::SelfType),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -88,11 +114,11 @@ pub fn tokenize<'a>(mut input: &'a str) -> impl Iterator<Item = Token<'a>> {
         let mut token_len = first_char.len_utf8();
         let mut token_visible_len = 1;
 
-        let is_punc  = first_char.is_ascii_punctuation();
+        let is_punc  = first_char.is_ascii_punctuation() && first_char != '_';
         let is_macro = if first_char == '!' {
             let second = input.chars().nth(1);
             if let Some(inner) = second {
-                if inner.is_alphanumeric() {
+                if inner.is_alphanumeric() || inner == '_' {
                     true
                 } else {
                     false
@@ -105,7 +131,7 @@ pub fn tokenize<'a>(mut input: &'a str) -> impl Iterator<Item = Token<'a>> {
         };
 
         for c in input.chars().skip(1) {
-            if c.is_whitespace() || c.is_ascii_punctuation() != (is_punc && !is_macro) || map_builtin(c).is_some() {
+            if c.is_whitespace() || (c.is_ascii_punctuation() && c != '_') != (is_punc && !is_macro) || map_builtin(c).is_some() {
                 break;
             }
 
@@ -118,6 +144,8 @@ pub fn tokenize<'a>(mut input: &'a str) -> impl Iterator<Item = Token<'a>> {
 
         let inner = if is_macro {
             TokenInner::Macro(&content[1..])
+        } else if let Some(kw) = Keyword::from_str(content) {
+            TokenInner::Keyword(kw)
         } else if is_punc {
             TokenInner::Symb(content)
         } else {

@@ -1,16 +1,10 @@
 use std::iter::Peekable;
 
-use crate::lexer::{Token, TokenInner};
+use crate::{data::Ctor, lexer::{Token, TokenInner}};
 
-use super::{ParseError, ParseResult, expr::{RawExpr, parse_expr}, parse_single, parse_str};
+use super::{ParseError, ParseResult, expr::parse_expr, parse_single, parse_str};
 
-#[derive(Debug)]
-pub struct RawCtor<'a> {
-    pub name: &'a str,
-    pub sig: RawExpr<'a>,
-}
-
-pub fn parse_ctors<'a, I: Iterator<Item = Token<'a>>>(tokens: &mut Peekable<I>) -> ParseResult<'a, Vec<RawCtor<'a>>> {
+pub fn parse_ctors<'a, I: Iterator<Item = Token<'a>>>(tokens: &mut Peekable<I>) -> ParseResult<'a, Vec<Ctor<'a, ()>>> {
     parse_single(tokens, TokenInner::BracketLeft)?;
     let mut result = Vec::new();
     loop {
@@ -30,12 +24,12 @@ pub fn parse_ctors<'a, I: Iterator<Item = Token<'a>>>(tokens: &mut Peekable<I>) 
     Ok(result)
 }
 
-pub fn parse_ctor<'a, I: Iterator<Item = Token<'a>>>(tokens: &mut Peekable<I>) -> ParseResult<'a, RawCtor<'a>> {
+pub fn parse_ctor<'a, I: Iterator<Item = Token<'a>>>(tokens: &mut Peekable<I>) -> ParseResult<'a, Ctor<'a, ()>> {
     let name = parse_str(tokens)?;
     parse_single(tokens, TokenInner::Symb(":"))?;
     let sig = parse_expr(tokens, -30)?;
     parse_single(tokens, TokenInner::SemiColon)?;
-    Ok(RawCtor {
+    Ok(Ctor {
         name,
         sig,
     })

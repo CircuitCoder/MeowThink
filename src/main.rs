@@ -1,22 +1,31 @@
-use crate::{lexer::tokenize, parser::parse};
+use crate::{lexer::tokenize, parser::parse, eval::{eval_top, Evaluated}};
 
+mod data;
 mod lexer;
 mod parser;
+mod eval;
 
 fn main() -> anyhow::Result<()> {
-    let input = std::fs::read_to_string("./testcases/even.mtk")?;
+    env_logger::init();
+    let input = std::fs::read_to_string("./testcases/nat.mtk")?;
     let tokens = tokenize(&input);
     let mut tokens = tokens.peekable();
 
     let ast = match parse(&mut tokens) {
         Ok(ast) => ast,
         Err(e) => {
-            println!("{:?}", e);
-            return Err(anyhow::anyhow!("Parsing failed"));
+            log::error!("{:?}", e);
+            return Err(anyhow::anyhow!("Parsing failed"))
         }
     };
 
-    println!("{:#?}", ast);
+    log::debug!("{:#?}", ast);
+
+    let Evaluated(v, t, src) = eval_top(&ast, false).map_err(|e| {
+        log::error!("{:?}", e);
+        anyhow::anyhow!("Evaluation failed")
+    })?;
+    log::info!("{:#?}", v);
 
     Ok(())
 }
