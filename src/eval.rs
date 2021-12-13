@@ -1,4 +1,4 @@
-use std::{rc::Rc, collections::HashMap, ops::Add};
+use std::{rc::Rc, collections::HashMap};
 
 use thiserror::Error;
 
@@ -28,18 +28,26 @@ pub enum IndPtr<'a> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Pending<'a> {
-    Ident {
-        ident: ExtBindingIdent,
-    },
+pub enum Delayed<'a> {
     Ap {
-        fun: Box<Pending<'a>>,
+        fun: Box<Value<'a>>,
         arg: Box<Value<'a>>,
     },
     Match {
-        matched: Box<Pending<'a>>,
+        matched: Box<Value<'a>>,
         variants: im::HashMap<&'a str, Variant<'a>>,
     },
+}
+
+impl<'a> Delayed<'a> {
+    pub fn substitute(&self, ident: ExtBindingIdent, with: &Value<'a>) -> Value<'a> {
+        match self {
+            Delayed::Ap { fun, arg } => fun.substitute(ident, with).ap_with(arg.substitute(ident, with)),
+            Delayed::Match { matched, variants } => matched.substitute(ident, with).match_with(
+                variants.iter().map(|(ctor, variant)| (*ctor, variant.substitute(ident, with))).collect()
+            )
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -50,9 +58,16 @@ pub struct Variant<'a> {
     // ret: Type<'a>,
 }
 
-impl<'a> Pending<'a> {
-    pub fn substitute(&self, ident: ExtBindingIdent, with: Value<'a>) -> Value<'a> {
-        todo!()
+impl<'a> Variant<'a> {
+    pub fn substitute(&self, ident: ExtBindingIdent, with: &Value<'a>) -> Variant<'a> {
+        if self.captures.contains(&ident) {
+            return self.clone();
+        }
+
+        Variant {
+            captures: self.captures.clone(),
+            value: self.value.substitute(ident, with),
+        }
     }
 }
 
@@ -76,7 +91,8 @@ pub enum Value<'a> {
         // Maybe partially applied
         data: im::Vector<Value<'a>>,
     },
-    Pending(Pending<'a>),
+    Delayed(Delayed<'a>),
+    Pending(ExtBindingIdent),
 }
 
 #[derive(PartialEq, Eq, Clone, Debug)]
@@ -101,7 +117,8 @@ pub enum Type<'a> {
         ind: IndPtr<'a>,
         indexes: im::Vector<Value<'a>>,
     },
-    Pending(Pending<'a>),
+    Delayed(Delayed<'a>),
+    Pending(ExtBindingIdent),
 }
 
 impl<'a> From<Rc<Type<'a>>> for Value<'a> {
@@ -112,21 +129,52 @@ impl<'a> From<Rc<Type<'a>>> for Value<'a> {
 
 impl<'a> Value<'a> {
     pub fn substitute(&self, ident: ExtBindingIdent, with: &Value<'a>) -> Value<'a> {
-        todo!()
+        match self {
+            Value::Pending(self_ident) => if *self_ident == ident {
+                with.clone()
+            } else {
+                self.clone()
+            }
+            Value::Delayed(d) => d.substitute(ident, with),
+            Value::Equality(t) => Value::Equality(t.clone().substitute(ident, with)),
+            Value::Type(t) => Value::Type(t.clone().substitute(ident, with)),
+            Value::Lambda { ident: arg, recursor, body } => {
+                if *arg == ident || ident == *recursor {
+                    // Overridden, skip
+                    self.clone()
+                } else {
+                    Value::Lambda { ident: *arg, recursor: *recursor, body: Box::new(body.substitute(ident, with)) }
+                }
+            },
+            Value::PartiallyIndexedInd { ind, indexes } => {
+                let ind = match ind {
+                    IndPtr::SelfInvoc => IndPtr::SelfInvoc,
+                    IndPtr::Complete(i) => IndPtr::Complete(Rc::new(i.substitute(ident, with))),
+                };
+                Value::PartiallyIndexedInd {
+                    ind,
+                    indexes: indexes.iter().map(|e| e.substitute(ident, with)).collect(),
+                }
+            },
+            Value::Inductive { .. } => {
+                // Inductive should never have to be substituted
+                self.clone()
+            },
+        }
     }
 
     pub fn match_with(self, variants: im::HashMap<&'a str, Variant<'a>>) -> Value<'a> {
         match self {
-            Value::Pending(p) => Value::Pending(Pending::Match {
-                matched: Box::new(p),
-                variants,
-            }),
             Value::Inductive { ind, ctor, data } => {
                 // TODO: check ind = matched
                 let variant = variants.get(ctor).unwrap();
                 assert_eq!(data.len(), variant.captures.len());
                 data.into_iter().zip(variant.captures.iter()).fold(variant.value.clone(), |acc, (val, ident)| acc.substitute(*ident, &val))
             },
+            Value::Pending(_) | Value::Delayed(_) => Value::Delayed(Delayed::Match {
+                matched: Box::new(self),
+                variants,
+            }),
             _ => unreachable!(),
         }
     }
@@ -134,20 +182,40 @@ impl<'a> Value<'a> {
     pub fn ap_with(self, arg: Value<'a>) -> Value<'a> {
         log::debug!("Ap: {:?} <- {:?}", self, arg);
         match self {
-            Value::Pending(p) => Value::Pending(Pending::Ap {
-                fun: Box::new(p),
-                arg: Box::new(arg),
-            }),
             Value::Lambda { ident, recursor, ref body } => {
-                // TODO: replace recursor when there is no pending between root and recursor
+                // FIXME: replace recursor when there is no pending between root and recursor
                 body.0.substitute(ident, &arg)
             }
-            Value::PartiallyIndexedInd { .. } => todo!(),
+            Value::PartiallyIndexedInd { ind, mut indexes } => {
+                // TODO: sanity check: arity?
+                indexes.push_back(arg);
+                Value::PartiallyIndexedInd {
+                    ind,
+                    indexes,
+                }
+            },
             Value::Inductive { ind, ctor, mut data } => {
                 data.push_back(arg);
                 Value::Inductive { ind, ctor, data }
             },
+            Value::Pending(_) | Value::Delayed(_) => Value::Delayed(Delayed::Ap{
+                fun: Box::new(self),
+                arg: Box::new(arg),
+            }),
             _ => unreachable!(),
+        }
+    }
+
+    pub fn try_unwrap_as_type<PI>(self) -> EvalResult<'a, Rc<Type<'a>>, PI> {
+        match self {
+            Value::Type(t) => Ok(t),
+            Value::PartiallyIndexedInd{ ind, indexes } => {
+                // FIXME: check arity
+                Ok(Rc::new(Type::FullyIndexedInd { ind, indexes }))
+            },
+            Value::Delayed(delayed) => Ok(Rc::new(Type::Delayed(delayed))),
+            Value::Pending(pending) => Ok(Rc::new(Type::Pending(pending))),
+            _ => panic!("Trying to unwrap as type: {:?}", self),
         }
     }
 }
@@ -186,7 +254,7 @@ impl<'a> Type<'a> {
                     }))
                 }
 
-                let unified_ret = anoret.clone().substitute(*anoident, &Value::Pending(Pending::Ident{ ident: *ident })).unify(ret.clone())?;
+                let unified_ret = anoret.clone().substitute(*anoident, &Value::Pending(*ident)).unify(ret.clone())?;
 
                 return Some(Rc::new(Type::Fun {
                     arg: unified_arg,
@@ -241,8 +309,15 @@ impl<'a> Type<'a> {
                     indexes: indexes.iter().map(|i| i.substitute(ident, with)).collect(),
                 })
             },
-            Type::Pending(_) => todo!(),
-            Type::Eq { .. } => todo!(),
+            Type::Pending(p) => if *p == ident {
+                with.clone().try_unwrap_as_type::<()>().unwrap()
+            } else {
+                self.clone()
+            },
+            Type::Delayed(d) => d.substitute(ident, with).try_unwrap_as_type::<()>().unwrap(),
+            Type::Eq { within, lhs, rhs } => {
+                todo!()
+            }
         }
     }
 
@@ -397,15 +472,15 @@ impl<'a> Evaluated<'a> {
             Type::Type { .. } => {},
             _ => return Err(EvalError::TypeOnly{ actual: self.0, ty: self.1 })
         }
-        match self.0 {
-            Value::Type(t) => Ok(t),
-            Value::PartiallyIndexedInd{ ind, indexes } => {
-                // FIXME: check arity
-                Ok(Rc::new(Type::FullyIndexedInd { ind, indexes }))
-            },
-            Value::Pending(pending) => Ok(Rc::new(Type::Pending(pending))),
-            _ => panic!("Trying to unwrap as type: {:?} typed {:?}", self.0, self.1),
-        }
+        self.0.try_unwrap_as_type()
+    }
+
+    pub fn substitute(&self, ident: ExtBindingIdent, with: &Value<'a>) -> Evaluated<'a> {
+        Evaluated(
+            self.0.substitute(ident, with),
+            self.1.clone().substitute(ident, with),
+            self.2.clone()
+        )
     }
 }
 
@@ -443,13 +518,13 @@ impl EvalCtx {
         expr: &'a Expr<'a, PI>,
         scope: &Scope<'a>,
         hint: Rc<Type<'a>>,
-        opaque: bool,
+        delay: bool,
     ) -> EvalResult<'a, Evaluated<'a>, PI> {
         match &expr.inner {
             ExprInner::PartialType(inner) => {
                 let inner_hint = hint.try_unify(Rc::new(Type::Type{ universe: None }))?;
 
-                let inner = self.eval(inner.as_ref(), scope, inner_hint, opaque)?;
+                let inner = self.eval(inner.as_ref(), scope, inner_hint, delay)?;
                 let Evaluated(_, t, src) = inner.clone();
                 let wrapped = Type::Partial(inner.try_unwrap_as_type()?);
                 Evaluated::create(Value::Type(Rc::new(wrapped)), t, src)
@@ -495,12 +570,11 @@ impl EvalCtx {
                 let mut inner_scope = scope;
                 let arg_ident = self.count_external();
                 if let Some(arg_name) = input_arg_name {
-                    let pending = Pending::Ident{ ident: arg_ident };
-                    let bounded = Evaluated::create(Value::Pending(pending), input_type_val.clone(), Source::External{ ident: arg_ident })?;
+                    let bounded = Evaluated::create(Value::Pending(arg_ident), input_type_val.clone(), Source::External{ ident: arg_ident })?;
                     inner_scope_data = scope.bind(arg_name, bounded);
                     inner_scope = &inner_scope_data;
                 }
-                let ret_type_val = self.eval(f.output.as_ref(), inner_scope, Rc::new(Type::Type{ universe: None }), opaque)?.try_unwrap_as_type()?;
+                let ret_type_val = self.eval(f.output.as_ref(), inner_scope, Rc::new(Type::Type{ universe: None }), delay)?.try_unwrap_as_type()?;
                 let self_type_val = Rc::new(Type::Fun{
                     arg: input_type_val,
                     ident: arg_ident,
@@ -532,8 +606,7 @@ impl EvalCtx {
                 };
 
                 // Introduce arg into scope
-                let pending = Pending::Ident{ ident: arg_ident };
-                let bounded = Evaluated::create(Value::Pending(pending), arg_type.clone(), Source::External{ ident: arg_ident })?;
+                let bounded = Evaluated::create(Value::Pending(arg_ident), arg_type.clone(), Source::External{ ident: arg_ident })?;
                 let ret_scope = scope.bind(arg.name, bounded);
 
                 // Evaluate ret type
@@ -553,12 +626,12 @@ impl EvalCtx {
                 let recursor_ident = self.count_external();
                 let mut inner_scope = ret_scope;
                 if let Some(rec) = rec {
-                    let rec_bounded = Evaluated::create(Value::Pending(Pending::Ident{ ident: recursor_ident }), self_type.clone(), Source::Recursor{ linked: arg_ident })?;
+                    let rec_bounded = Evaluated::create(Value::Pending(recursor_ident), self_type.clone(), Source::Recursor{ linked: arg_ident })?;
                     inner_scope = inner_scope.bind(rec, rec_bounded);
                 }
 
                 // Do shadowed eval / type check in body
-                let body_eval = self.eval(body.as_ref(), &inner_scope, ret_type, opaque)?;
+                let body_eval = self.eval(body.as_ref(), &inner_scope, ret_type, true)?;
 
                 let self_val = Value::Lambda {
                     ident: arg_ident,
@@ -574,9 +647,9 @@ impl EvalCtx {
                 } else {
                     Rc::new(Type::Hole)
                 };
-                let evaled = self.eval(&binding.val, scope, binding_hint, opaque)?;
+                let evaled = self.eval(&binding.val, scope, binding_hint, delay)?;
                 let inner_scope = scope.bind(binding.name.name, evaled);
-                self.eval(rest.as_ref(), &inner_scope, hint, opaque)
+                self.eval(rest.as_ref(), &inner_scope, hint, delay)
             },
             ExprInner::Name(name) => {
                 if name.sig.is_some() {
@@ -591,14 +664,14 @@ impl EvalCtx {
                     arg: Rc::new(Type::Hole),
                     ident: 0,
                     ret: Rc::new(Type::Hole),
-                }), opaque)?;
+                }), delay)?;
 
                 log::debug!("Applying function {:#?}", f_eval);
                 let (arg_type, arg_ident, ret_type) = match f_eval.1.as_ref() {
                     Type::Fun { arg, ident, ret } => (arg, *ident, ret),
                     _ => unreachable!(),
                 };
-                let arg_eval = self.eval(arg, scope, arg_type.clone(), opaque)?;
+                let arg_eval = self.eval(arg, scope, arg_type.clone(), delay)?;
                 // TODO: assert arg type concrete
                 let ret_type = ret_type.clone().substitute(arg_ident, &arg_eval.0);
                 let ret_type = ret_type.try_unify(hint)?;
@@ -616,7 +689,7 @@ impl EvalCtx {
             },
             ExprInner::Match { matched, arms } => {
                 // Build pendings
-                let Evaluated(matched_val, matched_type, matched_src) = self.eval(matched.as_ref(), scope, Rc::new(Type::Hole), opaque)?;
+                let Evaluated(matched_val, matched_type, matched_src) = self.eval(matched.as_ref(), scope, Rc::new(Type::Hole), delay)?;
                 let (ind, indexes) = match matched_type.as_ref() {
                     Type::FullyIndexedInd { ind, indexes } => {
                         match ind {
@@ -666,7 +739,7 @@ impl EvalCtx {
                             Type::Fun { arg, ident: orig, ret } => {
                                 let ident = self.count_external();
                                 data_idents.push(ident);
-                                let val = Value::Pending(Pending::Ident { ident });
+                                let val = Value::Pending(ident);
 
                                 let bounded = Evaluated(val.clone(), arg.clone(), data_src.clone());
                                 let name = data_names.next().unwrap();
@@ -685,7 +758,7 @@ impl EvalCtx {
                     let constructed = Value::Inductive {
                         ind: ind.clone(),
                         ctor: arm.ctor,
-                        data: data_idents.iter().cloned().map(|ident| Value::Pending(Pending::Ident{ ident })).collect()
+                        data: data_idents.iter().cloned().map(|ident| Value::Pending(ident)).collect()
                     };
                     let mut matched_eq = Rc::new(Type::Eq {
                         within: matched_type.clone(),
@@ -725,7 +798,7 @@ impl EvalCtx {
                         }
                     }
 
-                    let body = self.eval(&arm.body, &arm_scope, cur_hint.clone(), opaque)?;
+                    let body = self.eval(&arm.body, &arm_scope, cur_hint.clone(), delay)?;
                     cur_hint = cur_hint.try_unify(body.1.clone())?;
                     evaluated_arms.insert(arm.ctor, (data_idents, body));
                 }
