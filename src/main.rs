@@ -21,11 +21,12 @@ fn main() -> anyhow::Result<()> {
 
     log::debug!("{:#?}", ast);
 
-    let Evaluated(v, t, src) = eval_top(&ast, false).map_err(|e| {
+    let Evaluated(v, t, src) = eval_top(&ast).map_err(|e| {
         log::error!("{:?}", e);
         anyhow::anyhow!("Evaluation failed")
     })?;
-    log::info!("{:#?}", v);
+    log::info!("{}", v);
+    log::debug!("{:#?}", v);
 
     Ok(())
 }

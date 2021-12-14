@@ -10,7 +10,14 @@ let plus : nat -> nat -> nat
     S x / _ => r x (nat#S b);
   };
 
+let times : nat -> nat -> nat
+  = \a, rec r => \b => match a {
+    0 / _ => nat#0;
+    S x / _ => plus b (r x b);
+  };
+
 let 1 : nat = nat#S nat#0;
 let 2 : nat = nat#S 1;
+let 3 : nat = nat#S 2;
 
-plus nat#0 2
+times 3 2
