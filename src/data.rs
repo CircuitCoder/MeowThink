@@ -34,6 +34,14 @@ pub enum ExprInner<'a, T> {
     },
     Name(Box<Name<'a, T>>),
     Ap(Box<(Expr<'a, T>, Expr<'a, T>)>),
+    Cast {
+        orig: Box<Expr<'a, T>>,
+        eq: Box<Expr<'a, T>>,
+    },
+    Transport {
+        eq: Box<Expr<'a, T>>,
+        fun: Box<Expr<'a, T>>,
+    },
     Match {
         matched: Box<Expr<'a, T>>,
         arms: Vec<MatchArm<'a, T>>,
@@ -43,6 +51,7 @@ pub enum ExprInner<'a, T> {
         variant: &'a str,
     },
     SelfInvoc,
+    ReflInvoc,
 }
 
 impl<'a, T> ExprInner<'a, T> {

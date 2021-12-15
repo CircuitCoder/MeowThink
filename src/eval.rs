@@ -50,6 +50,8 @@ impl<'a> Variant<'a> {
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum Value<'a> {
+    Refl,
+    TypedRefl(Rc<Type<'a>>),
     Equality(Rc<Type<'a>>),
     Type(Rc<Type<'a>>),
     Lambda {
@@ -79,6 +81,7 @@ pub enum Value<'a> {
         variants: im::HashMap<&'a str, Variant<'a>>,
     },
     Pending(ExtBindingIdent),
+    Placeholder, // Hole in identity, hole in argument, etc
 }
 
 #[derive(PartialEq, Eq, Clone, Debug)]
@@ -156,6 +159,9 @@ impl<'a> Value<'a> {
                     data: data.iter().map(|d| d.substitute(ident, with)).collect()
                 }
             },
+            Value::Placeholder => Value::Placeholder,
+            Value::Refl => Value::Refl,
+            Value::TypedRefl(ty) => Value::TypedRefl(ty.clone().substitute(ident, with)),
         }
     }
 
@@ -180,7 +186,6 @@ impl<'a> Value<'a> {
         log::debug!("Ap: {:?} <- {:?}", self, arg);
         match self {
             Value::Lambda { ident, recursor, ref body } => {
-                // FIXME: replace recursor when there is no pending between root and recursor
                 body.0.substitute(ident, &arg).substitute(recursor, &self).progress()
             }
             Value::PartiallyIndexedInd { ind, mut indexes } => {
@@ -196,6 +201,12 @@ impl<'a> Value<'a> {
                 data.push_back(arg);
                 Value::Inductive { ind, ctor, data }.progress()
             },
+            Value::Refl => Value::TypedRefl(arg.try_unwrap_as_type::<()>().unwrap()),
+            Value::TypedRefl(ty) => Value::Equality(Rc::new(Type::Eq {
+                within: ty,
+                lhs: arg.clone(),
+                rhs: arg.clone(),
+            })),
             _ => Value::Ap {
                 fun: Box::new(self),
                 arg: Box::new(arg.progress()),
@@ -210,6 +221,7 @@ impl<'a> Value<'a> {
                 // FIXME: check arity
                 Ok(Rc::new(Type::FullyIndexedInd { ind, indexes }))
             },
+            Value::Placeholder => Ok(Rc::new(Type::Hole)),
             Value::Ap { .. } | Value::Match { .. } | Value::Pending(_) => Ok(Rc::new(Type::Delayed(self))),
             _ => panic!("Trying to unwrap as type: {:?}", self),
         }
@@ -217,8 +229,8 @@ impl<'a> Value<'a> {
 
     pub fn progress(self) -> Value<'a> {
         match self {
-            Value::Equality(_) => self,
-            Value::Type(_) => todo!(),
+            Value::Equality(ty) => Value::Equality(ty.progress()),
+            Value::Type(ty) => Value::Type(ty.progress()),
             Value::Lambda { ident, recursor, mut body } => {
                 body.0 = body.0.progress();
                 Value::Lambda { ident, recursor, body }
@@ -233,6 +245,9 @@ impl<'a> Value<'a> {
             // TODO: optimize Ap and Match
             Value::Ap { fun, arg } => fun.progress().ap_with(*arg),
             Value::Match { matched, variants } => matched.progress().match_with(variants),
+            Value::Placeholder => Value::Placeholder,
+            Value::Refl => Value::Refl,
+            Value::TypedRefl(ty) => Value::TypedRefl(ty.progress()),
         }
     }
 }
@@ -254,6 +269,9 @@ impl<'a> Display for Value<'a> {
             Value::Ap { fun, arg } => write!(f, "(ap {}, {})", fun, arg),
             Value::Match { matched, ..}  => write!(f, "(match {})", matched),
             Value::Pending(p) => write!(f, "[{}]", p),
+            Value::Placeholder => write!(f, "_"),
+            Value::Refl => write!(f, "refl"),
+            Value::TypedRefl(t) => write!(f, "refl_{:?}", t),
         }
     }
 }
@@ -382,6 +400,11 @@ impl<'a> Type<'a> {
         }
     }
 
+    pub fn progress(self: Rc<Self>) -> Rc<Type<'a>> {
+        // TODO: do we need to do anything here?
+        self
+    }
+
     pub fn assert_concrete<PI>(&self) -> EvalResult<'a, (), PI> {
         // FIXME: impl
         Ok(())
@@ -442,12 +465,6 @@ pub enum EvalError<'a, PI> {
     #[error("`self` used outside of inductive defination")]
     SelfOutsideInd,
 
-    #[error("Insufficiently indexed inductive type: {ind:?} indexed by {indexes:?}")]
-    InsufficientlyIndexed {
-        ind: Rc<Ind<'a>>,
-        indexes: Vec<Value<'a>>,
-    },
-
     #[error("Undefined name / constructor: {name:?}")]
     Undefined {
         name: &'a str,
@@ -460,6 +477,16 @@ pub enum EvalError<'a, PI> {
 
     #[error("Unbounded recursion")]
     UnboundedRecursion,
+
+    #[error("Cannot cast with type: {ty:?}")]
+    NonTyEqCast {
+        ty: Rc<Type<'a>>,
+    },
+
+    #[error("Cannot transport with dependent function: {ty:?}")]
+    DependentTransport {
+        ty: Rc<Type<'a>>,
+    },
 }
 
 type EvalResult<'a, T, PI> = Result<T, EvalError<'a, PI>>;
@@ -499,7 +526,7 @@ pub struct Evaluated<'a>(
 impl<'a> Evaluated<'a> {
     pub fn create<PI>(v: Value<'a>, t: Rc<Type<'a>>, src: Source) -> EvalResult<'a, Self, PI> {
         // TODO: check if t is concrete
-        // t.assert_concrete()?;
+        t.assert_concrete()?;
         Ok(Self(v, t, src))
     }
 
@@ -616,7 +643,7 @@ impl EvalCtx {
                     ident: arg_ident,
                     ret: ret_type_val,
                 });
-                // TODO: pin down universe
+                // FIXME: pin down universe
                 Evaluated::create(Value::Type(self_type_val), Rc::new(Type::Type{ universe: Some(0) }), Source::Constructed)
             },
             ExprInner::Lambda { arg, ret, body, rec } => {
@@ -920,6 +947,126 @@ impl EvalCtx {
                 let val = Value::PartiallyIndexedInd{ ind: IndPtr::SelfInvoc, indexes: im::Vector::new() };
                 Evaluated::create(val, scope.ind_type.clone().ok_or(EvalError::SelfOutsideInd)?, Source::Constructed)
             }
+            ExprInner::ReflInvoc => {
+                let ty_ident = self.count_external();
+                let val_ident = self.count_external();
+                let ty = Rc::new(Type::Delayed(Value::Pending(ty_ident)));
+                Evaluated::create(Value::Refl, Rc::new(Type::Fun {
+                    arg: Rc::new(Type::Type { universe: None }),
+                    ident: ty_ident,
+                    ret: Rc::new(Type::Fun {
+                        arg: ty.clone(),
+                        ident: val_ident,
+                        ret: Rc::new(Type::Eq {
+                            within: ty,
+                            lhs: Value::Pending(val_ident),
+                            rhs: Value::Pending(val_ident),
+                        }),
+                    }),
+                }), Source::Constructed)
+            }
+            ExprInner::Cast { orig, eq } => {
+                let eq = self.eval(eq, scope, Rc::new(Type::Eq {
+                    within: Rc::new(Type::Type { universe: None }),
+                    lhs: Value::Type(Rc::new(Type::Hole)),
+                    rhs: Value::Type(hint),
+                }))?;
+                let (lhs, rhs, univ) = match eq.1.as_ref() {
+                    Type::Eq {
+                        within,
+                        lhs,
+                        rhs,
+                    } => {
+                        let univ = if let Type::Type { universe } = within.as_ref() {
+                            universe
+                        } else {
+                            return Err(EvalError::NonTyEqCast { ty: eq.1 });
+                        };
+                        (lhs.clone().try_unwrap_as_type()?, rhs.clone().try_unwrap_as_type()?, univ)
+                    },
+                    _ => return Err(EvalError::NonTyEqCast { ty: eq.1 }),
+                };
+
+                // TODO: check universe
+                let mut val = self.eval(orig, scope, lhs.clone())?;
+                // Fixme: check lhs and orig type is the same
+                if val.1 != lhs {
+                    panic!("Cast eq sanity check failed");
+                }
+
+                val.1 = rhs;
+                Ok(val)
+            },
+            ExprInner::Transport { eq, fun } => {
+                let unified = hint.try_unify(Rc::new(Type::Eq {
+                    within: Rc::new(Type::Hole),
+                    lhs: Value::Placeholder,
+                    rhs: Value::Placeholder,
+                }))?;
+
+                let within = match unified.as_ref() {
+                    Type::Eq {
+                        within,
+                        ..
+                    } => {
+                        within
+                    },
+                    _ => unreachable!()
+                };
+
+                let eq = self.eval(eq, scope, Rc::new(Type::Eq {
+                    within: Rc::new(Type::Hole),
+                    lhs: Value::Placeholder,
+                    rhs: Value::Placeholder,
+                }))?;
+
+                let (lhs, rhs, arg_ty) = match eq.1.as_ref() {
+                    Type::Eq {
+                        within,
+                        lhs,
+                        rhs,
+                    } => {
+                        (lhs, rhs, within)
+                    },
+                    _ => unreachable!()
+                };
+
+                let fun = self.eval(fun, scope, Rc::new(Type::Fun {
+                    arg: arg_ty.clone(),
+                    ident: 0,
+                    ret: within.clone(),
+                }))?;
+
+                // Asserts ret is non dependent on fun
+                let (ident, ret) = match fun.1.as_ref() {
+                    Type::Fun { ident, ret, .. } => (ident, ret),
+                    _ => unreachable!()
+                };
+                
+                let lhs_ap_ty = ret.clone().substitute(*ident, lhs);
+                let rhs_ap_ty = ret.clone().substitute(*ident, rhs);
+                if lhs_ap_ty != rhs_ap_ty {
+                    return Err(EvalError::DependentTransport { ty: fun.1 })
+                }
+
+                let lhs_ap = Value::Ap {
+                    fun: Box::new(fun.0.clone()),
+                    arg: Box::new(lhs.clone()),
+                }.progress();
+
+                let rhs_ap = Value::Ap {
+                    fun: Box::new(fun.0),
+                    arg: Box::new(rhs.clone()),
+                }.progress();
+
+                let ret_ty = Rc::new(Type::Eq {
+                    within: lhs_ap_ty.clone(),
+                    lhs: lhs_ap,
+                    rhs: rhs_ap,
+                });
+
+                Evaluated::create(Value::Equality(ret_ty.clone()), ret_ty, Source::Constructed)
+            },
         }
     }
 

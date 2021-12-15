@@ -34,6 +34,7 @@ pub enum Keyword {
     Type,
     Match,
     SelfType,
+    Refl,
 }
 
 impl Keyword {
@@ -45,6 +46,7 @@ impl Keyword {
             "type" => Some(Self::Type),
             "match" => Some(Self::Match),
             "self" => Some(Self::SelfType),
+            "refl" => Some(Self::Refl),
             _ => None,
         }
     }

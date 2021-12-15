@@ -7,6 +7,7 @@ use super::{ParseError, ParseResult, ind::parse_ctors, parse_single, parse_str, 
 fn binding_power_bin(op: &str) -> Option<(isize, isize)> {
     match op {
         // # => 100
+        "^" => Some((-9, -10)),
         "/" => Some((-9, -10)),
         "->" => Some((-19, -20)),
         ":" => Some((-29, -30)),
@@ -74,6 +75,7 @@ pub fn parse_expr<'a, I: Iterator<Item = Token<'a>>>(tokens: &mut Peekable<I>, p
                 ExprInner::Universe { level }.with(())
             },
             Keyword::SelfType => ExprInner::SelfInvoc.with(()),
+            Keyword::Refl => ExprInner::ReflInvoc.with(()),
         },
         TokenInner::Symb(op) | TokenInner::Word(op) => {
             if op == "\\" {
@@ -101,7 +103,7 @@ pub fn parse_expr<'a, I: Iterator<Item = Token<'a>>>(tokens: &mut Peekable<I>, p
             }
             TokenInner::Symb(op) | TokenInner::Word(op) => {
                 if op == "#" {
-                    let token = tokens.next().unwrap();
+                    tokens.next().unwrap();
                     is_binary = true;
                     lhs = ExprInner::CtorOf {
                         parent: Box::new(lhs),
@@ -134,6 +136,18 @@ pub fn parse_expr<'a, I: Iterator<Item = Token<'a>>>(tokens: &mut Peekable<I>, p
                             } else {
                                 return Err(ParseError::UnexpectedToken{ token });
                             }
+                        },
+                        "/" => {
+                            lhs = ExprInner::Cast{
+                                orig: Box::new(lhs),
+                                eq: Box::new(rhs),
+                            }.with(());
+                        },
+                        "^" => {
+                            lhs = ExprInner::Transport {
+                                eq: Box::new(lhs),
+                                fun: Box::new(rhs),
+                            }.with(());
                         },
                         _ => unreachable!(),
                     }
