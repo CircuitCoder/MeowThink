@@ -1,6 +1,7 @@
 use std::{rc::Rc, collections::HashMap, fmt::Display};
 
 use thiserror::Error;
+use std::fmt::Debug;
 
 use crate::data::{Expr, ExprInner, Name};
 
@@ -108,6 +109,26 @@ pub enum Type<'a> {
     },
     // Ap, Match, Pending
     Delayed(Value<'a>),
+}
+
+impl<'a> Display for Type<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Type::Hole => write!(f, "_"),
+            Type::Partial(t) => write!(f, "partial {}", t),
+            Type::Type { universe } => write!(f, "type {}", universe.map(|i| i.to_string()).unwrap_or("_".to_owned())),
+            Type::Eq { within, lhs, rhs } => write!(f, "<{} = {}>", lhs, rhs),
+            Type::Fun { arg, ident, ret } => write!(f, "([{}]: {}) -> {}", ident, arg, ret),
+            Type::FullyIndexedInd { ind, indexes } => {
+                write!(f, "<indtype>")?;
+                for index in indexes.iter() {
+                    write!(f, " {}", index)?;
+                }
+                Ok(())
+            },
+            Type::Delayed(v) => write!(f, "<delayed, {}>", v),
+        }
+    }
 }
 
 impl<'a> From<Rc<Type<'a>>> for Value<'a> {
@@ -250,6 +271,18 @@ impl<'a> Value<'a> {
             Value::TypedRefl(ty) => Value::TypedRefl(ty.progress()),
         }
     }
+
+    pub fn unify(&self, ano: &Value<'a>) -> Option<Value<'a>> {
+        if self == ano {
+            Some(self.clone())
+        } else if self == &Value::Placeholder {
+            Some(ano.clone())
+        } else if ano == &Value::Placeholder {
+            Some(self.clone())
+        } else {
+            None
+        }
+    }
 }
 
 impl<'a> Display for Value<'a> {
@@ -266,8 +299,8 @@ impl<'a> Display for Value<'a> {
                 }
                 Ok(())
             }
-            Value::Ap { fun, arg } => write!(f, "(ap {}, {})", fun, arg),
-            Value::Match { matched, ..}  => write!(f, "(match {})", matched),
+            Value::Ap { fun, arg } => write!(f, "{} {}", fun, arg),
+            Value::Match { matched, ..}  => write!(f, "match {}", matched),
             Value::Pending(p) => write!(f, "[{}]", p),
             Value::Placeholder => write!(f, "_"),
             Value::Refl => write!(f, "refl"),
@@ -312,13 +345,19 @@ impl<'a> Type<'a> {
 
                 let unified_ret = anoret.clone().substitute(*anoident, &Value::Pending(*ident)).unify(ret.clone())?;
 
-                return Some(Rc::new(Type::Fun {
+                Some(Rc::new(Type::Fun {
                     arg: unified_arg,
                     ident: ident.clone(),
                     ret: unified_ret,
-                }));
+                }))
             },
-            _ => panic!("Type unification not impleneted: {:#?}, {:#?}", self, ano),
+            (Type::Eq { within, lhs, rhs }, Type::Eq { within: aw, lhs: al, rhs: ar }) => Some(Rc::new(Type::Eq {
+                within: within.clone().unify(aw.clone())?,
+                lhs: lhs.unify(al)?.clone(),
+                rhs: rhs.unify(ar)?.clone(),
+            })),
+            // _ => panic!("Type unification not impleneted: {}, {}", self, ano),
+            _ => None
         }
     }
 
@@ -413,25 +452,25 @@ impl<'a> Type<'a> {
 
 #[derive(Error, Debug)]
 pub enum EvalError<'a, PI> {
-    #[error("Ununifiable types, expected {expected:?}, got {actual:?}")]
+    #[error("Ununifiable types, expected {expected}, got {actual}")]
     Ununifiable {
         expected: Rc<Type<'a>>,
         actual: Rc<Type<'a>>,
     },
 
-    #[error("Expected type, got {actual:?} with type {ty:?}")]
+    #[error("Expected type, got {actual} with type {ty}")]
     TypeOnly {
         actual: Value<'a>,
         ty: Rc<Type<'a>>,
     },
 
-    #[error("Can only match inductive types, got {actual:?} with type {ty:?}")]
+    #[error("Can only match inductive types, got {actual} with type {ty}")]
     NonIndMatch {
         actual: Value<'a>,
         ty: Rc<Type<'a>>,
     },
 
-    #[error("Can only select ctor of non-indexed inductive types, got {actual:?}")]
+    #[error("Can only select ctor of non-indexed inductive types, got {actual}")]
     NonIndCtor {
         actual: Value<'a>,
     },
@@ -465,7 +504,7 @@ pub enum EvalError<'a, PI> {
     #[error("`self` used outside of inductive defination")]
     SelfOutsideInd,
 
-    #[error("Undefined name / constructor: {name:?}")]
+    #[error("Undefined name / constructor: {name}")]
     Undefined {
         name: &'a str,
     },
@@ -478,12 +517,12 @@ pub enum EvalError<'a, PI> {
     #[error("Unbounded recursion")]
     UnboundedRecursion,
 
-    #[error("Cannot cast with type: {ty:?}")]
+    #[error("Cannot cast with type: {ty}")]
     NonTyEqCast {
         ty: Rc<Type<'a>>,
     },
 
-    #[error("Cannot transport with dependent function: {ty:?}")]
+    #[error("Cannot transport with dependent function: {ty}")]
     DependentTransport {
         ty: Rc<Type<'a>>,
     },
@@ -577,12 +616,13 @@ struct EvalCtx {
 
 impl EvalCtx {
     // TODO: ensure hint and result type is always unifiable
-    pub fn eval<'a, PI>(
+    pub fn eval<'a, PI: Debug>(
         &mut self,
         expr: &'a Expr<'a, PI>,
         scope: &Scope<'a>,
         hint: Rc<Type<'a>>,
     ) -> EvalResult<'a, Evaluated<'a>, PI> {
+        log::debug!("Eval: {:?}", expr);
         match &expr.inner {
             ExprInner::PartialType(inner) => {
                 let inner_hint = hint.try_unify(Rc::new(Type::Type{ universe: None }))?;
@@ -680,7 +720,7 @@ impl EvalCtx {
                 };
 
                 let self_type = Rc::new(Type::Fun {
-                    arg: arg_type,
+                    arg: arg_type.clone(),
                     ident: arg_ident,
                     ret: ret_type.clone(),
                 });
@@ -695,13 +735,20 @@ impl EvalCtx {
 
                 // Do shadowed eval / type check in body
                 let body_eval = self.eval(body.as_ref(), &inner_scope, ret_type)?;
+                let body_ty = body_eval.1.clone();
 
                 let self_val = Value::Lambda {
                     ident: arg_ident,
                     recursor: recursor_ident,
                     body: Box::new(body_eval),
                 };
-                // TODO: make self_type more specific using body_eval type
+
+                let self_type = Rc::new(Type::Fun {
+                    arg: arg_type,
+                    ident: arg_ident,
+                    ret: body_ty,
+                });
+
                 Evaluated::create(self_val, self_type, Source::Constructed)
             },
             ExprInner::Binding { binding, rest } => {
@@ -732,7 +779,7 @@ impl EvalCtx {
                 log::debug!("Applying function {:#?}", f_eval);
                 let (arg_type, arg_ident, ret_type) = match f_eval.1.as_ref() {
                     Type::Fun { arg, ident, ret } => (arg, *ident, ret),
-                    _ => unreachable!(),
+                    _ => panic!("Why did ap get a {:?}", f_eval.1),
                 };
                 let arg_eval = self.eval(arg, scope, arg_type.clone())?;
                 // TODO: assert arg type concrete
@@ -821,6 +868,7 @@ impl EvalCtx {
                         }
                     };
 
+                    let data_arm_scope = arm_scope.clone();
                     let constructed = Value::Inductive {
                         ind: ind.clone(),
                         ctor: arm.ctor,
@@ -828,13 +876,13 @@ impl EvalCtx {
                     };
                     let mut matched_eq = Rc::new(Type::Eq {
                         within: matched_type.clone(),
-                        lhs: matched_val.clone(),
-                        rhs: constructed,
+                        lhs: constructed,
+                        rhs: matched_val.clone(),
                     });
                     let mut ev_names = arm.ev.iter();
                     let full_ev_name = ev_names.next().unwrap();
                     if let Some(sig) = full_ev_name.sig.as_ref(){
-                        matched_eq = self.eval_hint(sig, scope)?.try_unify(matched_eq)?;
+                        matched_eq = self.eval_hint(sig, &data_arm_scope)?.try_unify(matched_eq)?;
                     }
                     let matched_ev = Evaluated(Value::Equality(matched_eq.clone()), matched_eq, Source::Constructed);
                     arm_scope = arm_scope.bind(full_ev_name.name, matched_ev);
@@ -852,7 +900,7 @@ impl EvalCtx {
                                     rhs: rhs.clone(),
                                 });
                                 if let Some(sig) = ev_name.sig.as_ref(){
-                                    ev_ty = self.eval_hint(sig, scope)?.try_unify(ev_ty)?;
+                                    ev_ty = self.eval_hint(sig, &data_arm_scope)?.try_unify(ev_ty)?;
                                 }
                                 let ev = Evaluated(Value::Equality(ev_ty.clone()), ev_ty, Source::Constructed);
                                 arm_scope = arm_scope.bind(ev_name.name, ev);
@@ -991,13 +1039,15 @@ impl EvalCtx {
                 let mut val = self.eval(orig, scope, lhs.clone())?;
                 // Fixme: check lhs and orig type is the same
                 if val.1 != lhs {
+                    println!("evaluated type: {}", val.1);
+                    println!("expected type: {}", lhs);
                     panic!("Cast eq sanity check failed");
                 }
 
                 val.1 = rhs;
                 Ok(val)
             },
-            ExprInner::Transport { eq, fun } => {
+            ExprInner::EqAp { eq, fun } => {
                 let unified = hint.try_unify(Rc::new(Type::Eq {
                     within: Rc::new(Type::Hole),
                     lhs: Value::Placeholder,
@@ -1067,10 +1117,29 @@ impl EvalCtx {
 
                 Evaluated::create(Value::Equality(ret_ty.clone()), ret_ty, Source::Constructed)
             },
+            ExprInner::Eq { lhs, rhs } => {
+                let lhs = self.eval(lhs, scope, Rc::new(Type::Hole))?;
+                let rhs = self.eval(rhs, scope, lhs.1.clone())?;
+
+                let within = rhs.1.clone();
+                let eq = Rc::new(Type::Eq {
+                    within,
+                    lhs: lhs.0,
+                    rhs: rhs.0,
+                });
+
+                // FIXME: universe + 1
+
+                Evaluated::create(
+                    Value::Type(eq),
+                    Rc::new(Type::Type { universe: None }),
+                    Source::Constructed,
+                )
+            },
         }
     }
 
-    pub fn eval_hint<'a, PI>(&mut self, sig: &'a Expr<'a, PI>, scope: &Scope<'a>) -> EvalResult<'a, Rc<Type<'a>>, PI> {
+    pub fn eval_hint<'a, PI: Debug>(&mut self, sig: &'a Expr<'a, PI>, scope: &Scope<'a>) -> EvalResult<'a, Rc<Type<'a>>, PI> {
         let evaluated = self.eval(sig, scope, Rc::new(Type::Type{ universe: None }))?;
         // TODO: check is type
         evaluated.try_unwrap_as_type()
@@ -1082,7 +1151,7 @@ impl EvalCtx {
     }
 }
 
-pub fn eval_top<'a, PI>(
+pub fn eval_top<'a, PI: Debug>(
     expr: &'a Expr<'a, PI>,
 ) -> EvalResult<'a, Evaluated<'a>, PI> {
     let mut ctx = EvalCtx::default();

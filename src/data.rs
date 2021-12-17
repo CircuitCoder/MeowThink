@@ -34,11 +34,15 @@ pub enum ExprInner<'a, T> {
     },
     Name(Box<Name<'a, T>>),
     Ap(Box<(Expr<'a, T>, Expr<'a, T>)>),
+    Eq {
+        lhs: Box<Expr<'a, T>>,
+        rhs: Box<Expr<'a, T>>,
+    },
     Cast {
         orig: Box<Expr<'a, T>>,
         eq: Box<Expr<'a, T>>,
     },
-    Transport {
+    EqAp {
         eq: Box<Expr<'a, T>>,
         fun: Box<Expr<'a, T>>,
     },

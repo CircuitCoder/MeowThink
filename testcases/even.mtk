@@ -6,14 +6,30 @@ let nat: type 0
 
 let double : nat -> nat
   = \x, rec double => match x {
-    0 => nat#0;
-    succ s => nat#succ (nat#succ (double s));
+    0 / _ => nat#0;
+    succ s / _ => nat#succ (nat#succ (double s));
   };
 
-let isEven : nat -> type 0
+let is_even : nat -> type 0
   = ind (nat -> type 0) {
-    even0 : self nat#0;
-    evenSS : (n: nat) -> self n -> self (nat#succ (nat#succ n));
+    0: self nat#0;
+    SS: (n: nat) -> self n -> self (nat#succ (nat#succ n));
   };
 
-!pass
+let all_double_is_even : (n: nat) -> is_even (double n)
+  = \n, rec ih => match n {
+    0 / (neqz: nat#0 == n) => (
+      let neqz1 = neqz ^ double;
+      let neqz2 = neqz1 ^ (\(x: nat) => is_even x);
+      is_even#0 / neqz2
+    );
+    succ prev / (neqsp: nat#succ prev == n) => (
+      let ihev: is_even (double prev) = ih prev;
+      let ihevSS: is_even (nat#succ (nat#succ (double prev))) = is_even#SS (double prev) ihev;
+      let neqsp1: (nat#succ (nat#succ (double prev))) == double n = neqsp ^ double;
+      let neqsp2 = neqsp1 ^ (\(x: nat) => is_even x);
+      ihevSS / neqsp2
+    );
+  };
+
+all_double_is_even

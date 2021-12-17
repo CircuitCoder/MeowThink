@@ -10,6 +10,7 @@ fn binding_power_bin(op: &str) -> Option<(isize, isize)> {
         "^" => Some((-9, -10)),
         "/" => Some((-9, -10)),
         "->" => Some((-19, -20)),
+        "==" => Some((-24, -25)),
         ":" => Some((-29, -30)),
         // "=>" -40
         "=" => Some((-50, -49)),
@@ -109,6 +110,8 @@ pub fn parse_expr<'a, I: Iterator<Item = Token<'a>>>(tokens: &mut Peekable<I>, p
                         parent: Box::new(lhs),
                         variant: parse_str(tokens)?,
                     }.with(());
+                } else if op == "=>" {
+                    break;
                 } else if let Some((lbp, rbp)) = binding_power_bin(op) {
                     is_binary = true;
                     if lbp < power {
@@ -137,6 +140,12 @@ pub fn parse_expr<'a, I: Iterator<Item = Token<'a>>>(tokens: &mut Peekable<I>, p
                                 return Err(ParseError::UnexpectedToken{ token });
                             }
                         },
+                        "==" => {
+                            lhs = ExprInner::Eq {
+                                lhs: Box::new(lhs),
+                                rhs: Box::new(rhs),
+                            }.with(());
+                        },
                         "/" => {
                             lhs = ExprInner::Cast{
                                 orig: Box::new(lhs),
@@ -144,7 +153,7 @@ pub fn parse_expr<'a, I: Iterator<Item = Token<'a>>>(tokens: &mut Peekable<I>, p
                             }.with(());
                         },
                         "^" => {
-                            lhs = ExprInner::Transport {
+                            lhs = ExprInner::EqAp {
                                 eq: Box::new(lhs),
                                 fun: Box::new(rhs),
                             }.with(());
