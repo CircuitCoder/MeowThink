@@ -129,16 +129,21 @@ impl<'a> Display for Type<'a> {
                 Ok(())
             },
             Type::Struct(fields) => {
-                write!(f, "struct {{ ")?;
+                write!(f, "struct {{")?;
                 let mut is_first = true;
                 for (k, v) in fields {
-                    if !is_first {
+                    if is_first {
+                        write!(f, " ")?;
+                    } else {
                         write!(f, ", ")?;
                     }
                     write!(f, "{}: {}", k, v)?;
                     is_first = false;
                 }
-                write!(f, " }}")?;
+                if !is_first {
+                    write!(f, " ")?;
+                }
+                write!(f, "}}")?;
                 Ok(())
             }
             Type::Delayed(v) => write!(f, "<delayed, {}>", v),
@@ -323,16 +328,21 @@ impl<'a> Display for Value<'a> {
                 Ok(())
             }
             Value::Struct(fields) => {
-                write!(f, "{{ ")?;
+                write!(f, "{{")?;
                 let mut is_first = true;
                 for (k, v) in fields {
-                    if !is_first {
+                    if is_first {
+                        write!(f, " ")?;
+                    } else {
                         write!(f, ", ")?;
                     }
                     write!(f, "{}: {}", k, v)?;
                     is_first = false;
                 }
-                write!(f, " }}")?;
+                if !is_first {
+                    write!(f, " ")?;
+                }
+                write!(f, "}}")?;
                 Ok(())
             }
             Value::Ap { fun, arg } => write!(f, "{} {}", fun, arg),
@@ -392,6 +402,22 @@ impl<'a> Type<'a> {
                 lhs: lhs.unify(al)?.clone(),
                 rhs: rhs.unify(ar)?.clone(),
             })),
+            (Type::FullyIndexedInd { ind, indexes }, Type::FullyIndexedInd { ind: ai, indexes: aidx }) => {
+                match (ind, ai) {
+                    (IndPtr::Complete(ic), IndPtr::Complete(aic)) => {
+                        if ic != aic {
+                            return None;
+                        }
+                    },
+                    (IndPtr::SelfInvoc, IndPtr::SelfInvoc) => {},
+                    _ => return None,
+                }
+                let mut idx = im::Vector::new();
+                for (ii, aii) in indexes.iter().zip(aidx) {
+                    idx.push_back(ii.unify(aii)?);
+                }
+                Some(Rc::new(Type::FullyIndexedInd { ind: ind.clone(), indexes: idx }))
+            },
             (Type::Struct(fa), Type::Struct(fb)) => {
                 if fa.len() != fb.len() {
                     return None;
@@ -822,7 +848,9 @@ impl EvalCtx {
                 if name.sig.is_some() {
                     return Err(EvalError::UnexpectedSig{ name: name.as_ref() })
                 }
-                scope.bindings.get(name.name).cloned().ok_or(EvalError::Undefined{ name: name.name })
+                let value = scope.bindings.get(name.name).cloned().ok_or(EvalError::Undefined{ name: name.name })?;
+                hint.try_unify(value.1.clone())?;
+                Ok(value)
             },
             ExprInner::Ap(pair) => {
                 let (f, arg) = pair.as_ref();
@@ -1190,6 +1218,24 @@ impl EvalCtx {
                 Evaluated::create(
                     Value::Type(eq),
                     Rc::new(Type::Type { universe: None }),
+                    Source::Constructed,
+                )
+            },
+            ExprInner::StructTy(fields) => {
+                let hint = hint.try_unify(Rc::new(Type::Type{ universe: None }))?;
+                let mut ret = im::HashMap::new();
+                for f in fields {
+                    let v = f.sig.as_ref()
+                        .map(|s| self.eval(s, scope, Rc::new(Type::Type{ universe: None })))
+                        .map(|e| e.and_then(|e| e.0.try_unwrap_as_type())).transpose()?
+                        .unwrap_or_else(|| Rc::new(Type::Hole));
+                    ret.insert(f.name, v);
+                }
+
+                // TODO: check universe
+                Evaluated::create(
+                    Value::Type(Rc::new(Type::Struct(ret))),
+                    hint,
                     Source::Constructed,
                 )
             },

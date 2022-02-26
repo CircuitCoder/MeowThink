@@ -4,9 +4,14 @@ let nat: type 0
     succ : self -> self;
   };
 
-let s = {
-  a: nat = nat;
+let s: struct {
+  a: nat;
+  b;
+  n: type 0;
+} = {
+  a: nat = nat#0;
   b = nat#succ nat#0;
+  n = nat;
 };
 
 s

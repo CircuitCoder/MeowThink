@@ -32,4 +32,4 @@ let all_double_is_even : (n: nat) -> is_even (double n)
     );
   };
 
-all_double_is_even
+{}

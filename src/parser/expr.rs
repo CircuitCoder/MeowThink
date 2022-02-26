@@ -47,7 +47,10 @@ pub fn parse_expr<'a, I: Iterator<Item = Token<'a>>>(tokens: &mut Peekable<I>, p
                 }.with(())
             },
             Keyword::Struct => {
-                unimplemented!()
+                parse_single(tokens, TokenInner::BracketLeft)?;
+                let inner = ExprInner::StructTy(parse_struct_type_body(tokens)?).with(());
+                parse_single(tokens, TokenInner::BracketRight)?;
+                inner
             },
             Keyword::Partial => {
                 let inner = parse_expr(tokens, 90)?;
@@ -391,6 +394,37 @@ pub fn parse_struct_body<'a, I: Iterator<Item = Token<'a>>>(tokens: &mut Peekabl
             break;
         }
         fields.push(parse_binding_tail(tokens)?);
+    }
+
+    Ok(fields)
+}
+
+pub fn parse_struct_type_body<'a, I: Iterator<Item = Token<'a>>>(tokens: &mut Peekable<I>) -> ParseResult<'a, Vec<Name<'a, ()>>> {
+    let mut fields = Vec::new();
+
+    loop {
+        if let Some(&TokenInner::BracketRight) = tokens.peek().map(|t| &t.inner) {
+            break;
+        }
+
+        let name = parse_str(tokens)?;
+        let mut sig = None;
+        if let Some(t) = tokens.next() {
+            match t.inner {
+                TokenInner::Symb(":") => {
+                    // Has signature
+                    sig = Some(parse_expr(tokens, -30)?);
+                    parse_single(tokens, TokenInner::SemiColon)?;
+                }
+                TokenInner::SemiColon => {},
+                _ => {
+                    return Err(ParseError::UnexpectedToken{ token: t });
+                }
+            }
+        } else {
+            return Err(ParseError::SoftEOF);
+        }
+        fields.push(Name { name, sig });
     }
 
     Ok(fields)

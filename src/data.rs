@@ -18,6 +18,7 @@ pub enum ExprInner<'a, T> {
         ctors: Vec<Ctor<'a, T>>,
     },
     Fun(Fun<'a, T>),
+    StructTy(Vec<Name<'a, T>>),
 
     // Other "Non-types"
     Lambda {
