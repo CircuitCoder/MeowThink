@@ -302,14 +302,41 @@ impl<'a> Value<'a> {
 
     pub fn unify(&self, ano: &Value<'a>) -> Option<Value<'a>> {
         if self == ano {
-            Some(self.clone())
-        } else if self == &Value::Placeholder {
-            Some(ano.clone())
-        } else if ano == &Value::Placeholder {
-            Some(self.clone())
-        } else {
-            None
+            Some(self.clone());
         }
+        match (self, ano) {
+            (&Value::Placeholder, _) => Some(ano.clone()),
+            (_, &Value::Placeholder) => Some(self.clone()),
+            (Value::Type(t), Value::Type(at)) => Some(Value::Type(t.clone().unify(at.clone())?)),
+            (Value::Lambda { ident, recursor, body }, Value::Lambda { ident: ai, recursor: ar, body: ab }) => {
+                let replaced_ab = ab.substitute(*ai, &Value::Pending(*ident)).substitute(*ar, &Value::Pending(*recursor));
+                if replaced_ab == **body {
+                    return Some(self.clone());
+                } else {
+                    return None;
+                }
+            }
+            _ => None,
+        }
+    }
+
+    pub fn promote_ind_type(self) -> Value<'a> {
+        if let Value::PartiallyIndexedInd { ind, indexes } = &self {
+            if let IndPtr::Complete(c) = ind {
+                assert!(c.sig.arity() == indexes.len());
+            }
+            return Value::Type(Rc::new(Type::FullyIndexedInd { ind: ind.clone(), indexes: indexes.clone() }));
+        }
+        return self;
+    }
+
+    pub fn demote_ind_type(self) -> Value<'a> {
+        if let Value::Type(t) = &self {
+            if let Type::FullyIndexedInd { ind, indexes } = &**t {
+                return Value::PartiallyIndexedInd { ind: ind.clone(), indexes: indexes.clone() };
+            }
+        }
+        return self;
     }
 }
 
@@ -738,7 +765,10 @@ impl EvalCtx {
                 }
 
                 let ind = IndPtr::Complete(Rc::new(Ind { variants: mapped_ctors, sig: interface.clone() }));
-                let self_val = Value::PartiallyIndexedInd { ind, indexes: im::Vector::new() };
+                let mut self_val = Value::PartiallyIndexedInd { ind, indexes: im::Vector::new() };
+                if let Type::Type { .. } = &*interface {
+                    self_val = self_val.promote_ind_type();
+                }
                 Evaluated::create(self_val, interface, Source::Constructed)
             },
             ExprInner::Fun(f) => {
@@ -878,10 +908,14 @@ impl EvalCtx {
                     }
                 }
 
-                let val = Value::Ap {
+                let mut val = Value::Ap {
                     fun: Box::new(f_eval.0),
                     arg: Box::new(arg_eval.0),
                 }.progress();
+
+                if let Type::Type { .. } = &*ret_type {
+                    val = val.promote_ind_type();
+                }
 
                 Evaluated::create(val, ret_type, Source::Constructed)
             },
@@ -939,7 +973,7 @@ impl EvalCtx {
                                 data_idents.push(ident);
                                 let val = Value::Pending(ident);
 
-                                let bounded = Evaluated(val.clone(), arg.clone(), data_src.clone());
+                                let bounded = Evaluated(val.clone(), arg.clone().instantiate_self(ind.clone(), true), data_src.clone());
                                 let name = data_names.next().unwrap();
                                 arm_scope = arm_scope.bind(*name, bounded);
 
@@ -1039,7 +1073,8 @@ impl EvalCtx {
             },
             ExprInner::CtorOf { parent, variant } => {
                 let parent = self.eval(parent.as_ref(), scope, Rc::new(Type::Hole))?;
-                let ind = match parent.0 {
+                let demoted = parent.0.demote_ind_type();
+                let ind = match demoted {
                     Value::PartiallyIndexedInd { ind, indexes } if indexes.len() == 0 => {
                         match ind {
                             IndPtr::SelfInvoc => unreachable!(), // We should never get self out side of ind defination
@@ -1047,7 +1082,7 @@ impl EvalCtx {
                         }
                     },
                     _ => {
-                        return Err(EvalError::NonIndCtor { actual: parent.0 });
+                        return Err(EvalError::NonIndCtor { actual: demoted });
                     },
                 };
 
