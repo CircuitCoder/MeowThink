@@ -58,6 +58,10 @@ pub enum ExprInner<'a, T> {
     SelfInvoc,
     ReflInvoc,
     Struct(Vec<Binding<'a, T>>),
+    Field {
+        parent: Box<Expr<'a, T>>,
+        field: &'a str,
+    }
 }
 
 impl<'a, T> ExprInner<'a, T> {

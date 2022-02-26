@@ -7,6 +7,7 @@ use super::{ParseError, ParseResult, ind::parse_ctors, parse_single, parse_str, 
 fn binding_power_bin(op: &str) -> Option<(isize, isize)> {
     match op {
         // # => 100
+        // . => 10
         "^" => Some((-9, -10)),
         "/" => Some((-9, -10)),
         "->" => Some((-19, -20)),
@@ -116,6 +117,13 @@ pub fn parse_expr<'a, I: Iterator<Item = Token<'a>>>(tokens: &mut Peekable<I>, p
                     lhs = ExprInner::CtorOf {
                         parent: Box::new(lhs),
                         variant: parse_str(tokens)?,
+                    }.with(());
+                } else if op == "." {
+                    tokens.next().unwrap();
+                    is_binary = true;
+                    lhs = ExprInner::Field {
+                        parent: Box::new(lhs),
+                        field: parse_str(tokens)?,
                     }.with(());
                 } else if op == "=>" {
                     break;

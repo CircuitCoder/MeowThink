@@ -82,6 +82,10 @@ pub enum Value<'a> {
         matched: Box<Value<'a>>,
         variants: im::HashMap<&'a str, Variant<'a>>,
     },
+    Field {
+        parent: Box<Value<'a>>,
+        field: &'a str,
+    },
     Pending(ExtBindingIdent),
     Placeholder, // Hole in identity, hole in argument, etc
 }
@@ -205,6 +209,9 @@ impl<'a> Value<'a> {
                     fields.iter().map(|(name, val)| (*name, val.substitute(ident, with))).collect()
                 )
             },
+            Value::Field { parent, field } => {
+                Value::Field { parent: Box::new(parent.substitute(ident, with)), field: *field }
+            },
             Value::Placeholder => Value::Placeholder,
             Value::Refl => Value::Refl,
             Value::TypedRefl(ty) => Value::TypedRefl(ty.clone().substitute(ident, with)),
@@ -260,6 +267,18 @@ impl<'a> Value<'a> {
         }
     }
 
+    pub fn field_with(self, field: &'a str) -> Value<'a> {
+        match self {
+            Value::Struct(mut fields) => {
+                fields.remove(field).unwrap()
+            },
+            _ => Value::Field {
+                parent: Box::new(self),
+                field,
+            },
+        }
+    }
+
     pub fn try_unwrap_as_type<PI>(self) -> EvalResult<'a, Rc<Type<'a>>, PI> {
         match self {
             Value::Type(t) => Ok(t),
@@ -294,6 +313,7 @@ impl<'a> Value<'a> {
             // TODO: optimize Ap and Match
             Value::Ap { fun, arg } => fun.progress().ap_with(*arg),
             Value::Match { matched, variants } => matched.progress().match_with(variants),
+            Value::Field { parent, field } => parent.progress().field_with(field),
             Value::Placeholder => Value::Placeholder,
             Value::Refl => Value::Refl,
             Value::TypedRefl(ty) => Value::TypedRefl(ty.progress()),
@@ -378,6 +398,7 @@ impl<'a> Display for Value<'a> {
             Value::Placeholder => write!(f, "_"),
             Value::Refl => write!(f, "refl"),
             Value::TypedRefl(t) => write!(f, "refl_{:?}", t),
+            Value::Field { parent, field } => write!(f, "({}).{}", parent, field),
         }
     }
 }
@@ -589,6 +610,18 @@ pub enum EvalError<'a, PI> {
     UndefinedCtor {
         ctor: &'a str,
         ind: Rc<Ind<'a>>,
+    },
+
+    #[error("Can only select field of structs, got {actual} of type {ty}")]
+    NonStructField {
+        actual: Value<'a>,
+        ty: Rc<Type<'a>>,
+    },
+
+    #[error("Field `{field}` not present in type {ty:?}")]
+    UndefinedField {
+        field: &'a str,
+        ty: Rc<Type<'a>>,
     },
 
     #[error("Matching arm for ctor `{ctor}` of {ind:?} got wrong number of data binding: got {actual}")]
@@ -1300,6 +1333,27 @@ impl EvalCtx {
 
                 Evaluated::create(Value::Struct(values), Rc::new(Type::Struct(field_hints)), Source::Constructed)
             },
+
+            ExprInner::Field { parent, field } => {
+                let parent_eval = self.eval(parent.as_ref(), scope, Rc::new(Type::Hole))?;
+                let field_types = match &*parent_eval.1 {
+                    &Type::Struct(ref s) => {
+                        s
+                    },
+                    _ => return Err(EvalError::NonStructField { actual: parent_eval.0, ty: parent_eval.1 }),
+                };
+                let field_ty = field_types.get(field).ok_or_else(|| EvalError::UndefinedField { field: *field, ty: parent_eval.1.clone() })?;
+                let field_ty = hint.try_unify(field_ty.clone())?;
+
+                let val = parent_eval.0.field_with(*field);
+
+                let src = match parent_eval.2 {
+                    Source::External { ident: source } | Source::Destructed { source } => Source::Destructed { source },
+                    _ => Source::Constructed,
+                };
+
+                Evaluated::create(val, field_ty, src)
+            }
         }
     }
 
