@@ -12,11 +12,6 @@ pub enum TokenInner<'a> {
     // Comma
     Comma,
 
-    /// !alphabetical
-    Macro(&'a str),
-
-    // TODO: comments
-
     Keyword(Keyword),
 
     /// Any other alphanumerical word
@@ -24,6 +19,16 @@ pub enum TokenInner<'a> {
 
     /// Any other symbol combination
     Symb(&'a str),
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum PreTokenInner<'a> {
+    Token(TokenInner<'a>),
+
+    /// !alphabetical
+    Macro(&'a str),
+
+    Comment(&'a str),
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -35,6 +40,7 @@ pub enum Keyword {
     Match,
     SelfType,
     Refl,
+    Struct,
 }
 
 impl Keyword {
@@ -47,6 +53,8 @@ impl Keyword {
             "match" => Some(Self::Match),
             "self" => Some(Self::SelfType),
             "refl" => Some(Self::Refl),
+            "struct" => Some(Self::Struct),
+            // "import"
             _ => None,
         }
     }
@@ -61,6 +69,12 @@ pub struct SrcRange {
 #[derive(Debug)]
 pub struct Token<'a> {
     pub inner: TokenInner<'a>,
+    pub loc: SrcRange,
+}
+
+#[derive(Debug)]
+pub struct PreToken<'a> {
+    pub inner: PreTokenInner<'a>,
     pub loc: SrcRange,
 }
 
@@ -145,7 +159,7 @@ pub fn tokenize<'a>(mut input: &'a str) -> impl Iterator<Item = Token<'a>> {
         input = &input[token_len..];
 
         let inner = if is_macro {
-            TokenInner::Macro(&content[1..])
+            unimplemented!("macro");
         } else if let Some(kw) = Keyword::from_str(content) {
             TokenInner::Keyword(kw)
         } else if is_punc {

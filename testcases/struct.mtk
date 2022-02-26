@@ -1,0 +1,12 @@
+let nat: type 0
+  = ind (type 0) {
+    0 : self;
+    succ : self -> self;
+  };
+
+let s = {
+  a: nat = nat;
+  b = nat#succ nat#0;
+};
+
+s

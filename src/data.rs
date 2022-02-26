@@ -56,6 +56,7 @@ pub enum ExprInner<'a, T> {
     },
     SelfInvoc,
     ReflInvoc,
+    Struct(Vec<Binding<'a, T>>),
 }
 
 impl<'a, T> ExprInner<'a, T> {

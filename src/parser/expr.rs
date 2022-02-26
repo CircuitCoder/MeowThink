@@ -21,20 +21,21 @@ fn binding_power_bin(op: &str) -> Option<(isize, isize)> {
 pub fn parse_expr<'a, I: Iterator<Item = Token<'a>>>(tokens: &mut Peekable<I>, power: isize) -> ParseResult<'a, Expr<'a, ()>> {
     let first = tokens.next().ok_or(ParseError::SoftEOF)?;
     let mut lhs = match first.inner {
-        TokenInner::SemiColon | TokenInner::ParenRight | TokenInner::BracketRight | TokenInner::BracketLeft | TokenInner::Comma => {
+        TokenInner::SemiColon | TokenInner::ParenRight | TokenInner::BracketRight | TokenInner::Comma => {
             return Err(ParseError::UnexpectedToken{ token: first });
         }
-        TokenInner::Macro(m) => panic!("Macro expansion not yet implemented"),
         TokenInner::ParenLeft => {
             // Step after the paren
             let inner = parse_expr(tokens, isize::MIN)?;
-            let next = tokens.next().ok_or(ParseError::EOF)?;
-            if next.inner != TokenInner::ParenRight {
-                return Err(ParseError::UnexpectedToken{ token: next });
-            } else {
-                inner
-            }
+            parse_single(tokens, TokenInner::ParenRight)?;
+            inner
         },
+        TokenInner::BracketLeft => {
+            let inner = ExprInner::Struct(parse_struct_body(tokens)?).with(());
+            parse_single(tokens, TokenInner::BracketRight)?;
+            inner
+        },
+
         TokenInner::Keyword(kw) => match kw {
             // TODO: check for binding power for keywords, and update binding power
             Keyword::Let => {
@@ -44,6 +45,9 @@ pub fn parse_expr<'a, I: Iterator<Item = Token<'a>>>(tokens: &mut Peekable<I>, p
                     binding,
                     rest,
                 }.with(())
+            },
+            Keyword::Struct => {
+                unimplemented!()
             },
             Keyword::Partial => {
                 let inner = parse_expr(tokens, 90)?;
@@ -377,4 +381,17 @@ pub fn parse_match_body<'a, I: Iterator<Item = Token<'a>>>(tokens: &mut Peekable
     parse_single(tokens, TokenInner::BracketRight)?;
 
     Ok(arms)
+}
+
+pub fn parse_struct_body<'a, I: Iterator<Item = Token<'a>>>(tokens: &mut Peekable<I>) -> ParseResult<'a, Vec<Binding<'a, ()>>> {
+    let mut fields = Vec::new();
+
+    loop {
+        if let Some(&TokenInner::BracketRight) = tokens.peek().map(|t| &t.inner) {
+            break;
+        }
+        fields.push(parse_binding_tail(tokens)?);
+    }
+
+    Ok(fields)
 }

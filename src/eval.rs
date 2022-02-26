@@ -71,6 +71,7 @@ pub enum Value<'a> {
         // Maybe partially applied
         data: im::Vector<Value<'a>>,
     },
+    Struct(im::HashMap<&'a str, Value<'a>>),
 
     // Delayed evaluation
     Ap {
@@ -107,6 +108,7 @@ pub enum Type<'a> {
         ind: IndPtr<'a>,
         indexes: im::Vector<Value<'a>>,
     },
+    Struct(im::HashMap<&'a str, Rc<Type<'a>>>),
     // Ap, Match, Pending
     Delayed(Value<'a>),
 }
@@ -126,6 +128,19 @@ impl<'a> Display for Type<'a> {
                 }
                 Ok(())
             },
+            Type::Struct(fields) => {
+                write!(f, "struct {{ ")?;
+                let mut is_first = true;
+                for (k, v) in fields {
+                    if !is_first {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}: {}", k, v)?;
+                    is_first = false;
+                }
+                write!(f, " }}")?;
+                Ok(())
+            }
             Type::Delayed(v) => write!(f, "<delayed, {}>", v),
         }
     }
@@ -179,6 +194,11 @@ impl<'a> Value<'a> {
                     ctor: *ctor,
                     data: data.iter().map(|d| d.substitute(ident, with)).collect()
                 }
+            },
+            Value::Struct(fields) => {
+                Value::Struct(
+                    fields.iter().map(|(name, val)| (*name, val.substitute(ident, with))).collect()
+                )
             },
             Value::Placeholder => Value::Placeholder,
             Value::Refl => Value::Refl,
@@ -261,6 +281,9 @@ impl<'a> Value<'a> {
                 ind, ctor,
                 data: data.into_iter().map(Value::progress).collect(),
             },
+            Value::Struct(fields) => Value::Struct(
+                fields.iter().map(|(name, val)| (*name, val.clone().progress())).collect()
+            ),
             Value::Pending(_) => self,
 
             // TODO: optimize Ap and Match
@@ -297,6 +320,19 @@ impl<'a> Display for Value<'a> {
                 for d in data.iter() {
                     write!(f, " ({})", d)?;
                 }
+                Ok(())
+            }
+            Value::Struct(fields) => {
+                write!(f, "{{ ")?;
+                let mut is_first = true;
+                for (k, v) in fields {
+                    if !is_first {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}: {}", k, v)?;
+                    is_first = false;
+                }
+                write!(f, " }}")?;
                 Ok(())
             }
             Value::Ap { fun, arg } => write!(f, "{} {}", fun, arg),
@@ -356,6 +392,22 @@ impl<'a> Type<'a> {
                 lhs: lhs.unify(al)?.clone(),
                 rhs: rhs.unify(ar)?.clone(),
             })),
+            (Type::Struct(fa), Type::Struct(fb)) => {
+                if fa.len() != fb.len() {
+                    return None;
+                }
+
+                let mut ret = im::HashMap::new();
+                for (k, va) in fa {
+                    if let Some(vb) = fb.get(k) {
+                        ret.insert(*k, va.clone().unify(vb.clone())?);
+                    } else {
+                        return None;
+                    }
+                }
+
+                Some(Rc::new(Type::Struct(ret)))
+            },
             // _ => panic!("Type unification not impleneted: {}, {}", self, ano),
             _ => None
         }
@@ -403,6 +455,11 @@ impl<'a> Type<'a> {
                     ind,
                     indexes: indexes.iter().map(|i| i.substitute(ident, with)).collect(),
                 })
+            },
+            Type::Struct(fields) => {
+                Rc::new(Type::Struct(
+                    fields.iter().map(|(name, val)| (*name, val.clone().substitute(ident, with))).collect()
+                ))
             },
             Type::Delayed(d) => d.substitute(ident, with).try_unwrap_as_type::<()>().unwrap(),
             Type::Eq { within, lhs, rhs } => {
@@ -1135,6 +1192,32 @@ impl EvalCtx {
                     Rc::new(Type::Type { universe: None }),
                     Source::Constructed,
                 )
+            },
+            ExprInner::Struct(fields) => {
+                let mut field_hints = im::HashMap::new();
+                for binding in fields {
+                    let sig = if let Some(sig) = &binding.name.sig {
+                        self.eval_hint(sig, scope)?
+                    } else {
+                        Rc::new(Type::Hole)
+                    };
+                    field_hints.insert(binding.name.name, sig);
+                }
+                let unified = hint.try_unify(Rc::new(Type::Struct(field_hints)))?;
+                let mut field_hints = match &*unified {
+                    Type::Struct(f) => f.clone(),
+                    _ => unreachable!(),
+                };
+
+                let mut values = im::HashMap::new();
+                for binding in fields {
+                    let hint = field_hints.get(&binding.name.name).unwrap();
+                    let evaled = self.eval(&binding.val, scope, hint.clone())?;
+                    values.insert(binding.name.name, evaled.0);
+                    field_hints.insert(binding.name.name, evaled.1);
+                }
+
+                Evaluated::create(Value::Struct(values), Rc::new(Type::Struct(field_hints)), Source::Constructed)
             },
         }
     }
