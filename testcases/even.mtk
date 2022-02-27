@@ -32,4 +32,56 @@ let all_double_is_even : (n: nat) -> is_even (double n)
     );
   };
 
+let false = ind (type 0) {};
+let 1 = nat#succ nat#0;
+let eq_refl : (A: type 0) -> (x: A) -> (y: A) -> x == y -> y == x
+  = \A => \x => \y => \ev => (
+    let transp = \(r: A) => r == x;
+    let xrefl : x == x = refl A x;
+    let eqeq : (x == x) == (y == x) = ev ^ transp;
+    xrefl / eqeq
+  );
+
+let succ_not_zero : (x: nat) -> (nat#succ x) == nat#0 -> false
+  = \x => \ev => (
+    let transp : nat -> type 0 = \(n: nat) => match n {
+      0 / _ => false;
+      succ _ / _ => struct {};
+    };
+
+    let tyeq : struct {} == false = ev ^ transp;
+    {} / tyeq
+  );
+
+let succ_inj : (n: nat) -> (m: nat) -> nat#succ n == nat#succ m -> n == m
+  = \n => \m => \ev => (
+    let tycast : nat -> type 0 = \(n: nat) => match n {
+      0 / _ => struct {};
+      succ _ / _ => nat;
+    };
+    let eq : (n: nat) -> tycast n = \n => match n {
+      0 / (eqev: nat#0 == n) => (
+        let tceq : struct {} == tycast n = eqev ^ tycast;
+        {} / tceq
+      );
+      succ k / (eqev: nat#succ k == n) => (
+        let tceq : nat == tycast n = eqev ^ tycast;
+        k / tceq
+      );
+    };
+    ev ^ eq
+  );
+
+let one_not_even : is_even 1 -> false
+  = \ev => match ev {
+    0 / _ (eqev: nat#0 == 1) => (
+      let eqev1 = eq_refl nat nat#0 1 eqev;
+      succ_not_zero nat#0 eqev1
+    );
+    SS k _ / _ (eqev: nat#succ (nat#succ k) == 1) => (
+      let eqev1 : nat#succ k == nat#0 = succ_inj (nat#succ k) nat#0 eqev;
+      succ_not_zero k eqev1
+    );
+  };
+
 {}

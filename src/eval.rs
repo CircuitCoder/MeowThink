@@ -163,7 +163,7 @@ impl From<Rc<Type>> for Value {
 
 impl Value {
     pub fn substitute(&self, ident: ExtBindingIdent, with: &Value) -> Value {
-        match self {
+        let ret = match self {
             Value::Pending(self_ident) => if *self_ident == ident {
                 with.clone()
             } else {
@@ -215,7 +215,9 @@ impl Value {
             Value::Placeholder => Value::Placeholder,
             Value::Refl => Value::Refl,
             Value::TypedRefl(ty) => Value::TypedRefl(ty.clone().substitute(ident, with)),
-        }
+        };
+
+        ret.compact()
     }
 
     pub fn match_with(self, variants: im::HashMap<String, Variant>) -> Value {
@@ -321,13 +323,15 @@ impl Value {
     }
 
     pub fn unify(&self, ano: &Value) -> Option<Value> {
+        // FIXME: correctly unify match body, lambda body, recursive unify, etc
+        log::debug!("Value unify: {} <-> {}", self, ano);
         if self == ano {
-            Some(self.clone());
+            return Some(self.clone());
         }
         match (self, ano) {
             (&Value::Placeholder, _) => Some(ano.clone()),
             (_, &Value::Placeholder) => Some(self.clone()),
-            (Value::Type(t), Value::Type(at)) => Some(Value::Type(t.clone().unify(at.clone())?)),
+            (Value::Type(t), Value::Type(at)) => Some(Value::Type(t.clone().unify(at.clone())?).compact()),
             (Value::Lambda { ident, recursor, body }, Value::Lambda { ident: ai, recursor: ar, body: ab }) => {
                 let replaced_ab = ab.substitute(*ai, &Value::Pending(*ident)).substitute(*ar, &Value::Pending(*recursor));
                 if replaced_ab == **body {
@@ -357,6 +361,14 @@ impl Value {
             }
         }
         return self;
+    }
+
+    pub fn compact(self) -> Value {
+        // Persumably we don't need deep compact
+        match self {
+            Value::Type(ref t) if let Type::Delayed(d) = &**t => d.clone(),
+            _ => self,
+        }
     }
 }
 
@@ -506,7 +518,7 @@ impl Type {
 
     pub fn substitute(self: Rc<Self>, ident: ExtBindingIdent, with: &Value) -> Rc<Type> {
         log::debug!("Type {:?} [{}/{:?}]", self, ident, with);
-        match self.as_ref() {
+        let ret = match self.as_ref() {
             Type::Hole => self.clone(),
             Type::Partial(p) => Rc::new(Type::Partial(p.clone().substitute(ident, with))),
             Type::Type { .. } => self.clone(),
@@ -544,12 +556,14 @@ impl Type {
                     rhs: rhs.substitute(ident, with),
                 })
             }
-        }
+        };
+
+        ret.progress().compact()
     }
 
     pub fn instantiate_self(self: Rc<Self>, ind: Rc<Ind>, top: bool) -> Rc<Type> {
         // Assumes strict postivity
-        match self.as_ref() {
+        let ret = match self.as_ref() {
             Type::Fun { arg, ident: sident, ret } => {
                 let arg = if top {
                     arg.clone().instantiate_self(ind.clone(), false)
@@ -568,17 +582,30 @@ impl Type {
                 })
             },
             _ => self.clone(),
-        }
+        };
+
+        ret.progress().compact()
     }
 
     pub fn progress(self: Rc<Self>) -> Rc<Type> {
-        // TODO: do we need to do anything here?
-        self
+        if let Type::Delayed(v) = &*self {
+            return Rc::new(Type::Delayed(v.clone().progress())).compact();
+        }
+
+        return self;
     }
 
     pub fn assert_concrete<PI>(&self) -> EvalResult<(), PI> {
         // FIXME: impl
         Ok(())
+    }
+
+    pub fn compact(self: Rc<Self>) -> Rc<Type> {
+        // Persumably we don't need deep compact
+        match &*self {
+            Type::Delayed(Value::Type(t)) => t.clone(),
+            _ => self,
+        }
     }
 }
 
@@ -720,7 +747,7 @@ impl Evaluated {
     pub fn create<PI>(v: Value, t: Rc<Type>, src: Source) -> EvalResult<Self, PI> {
         // TODO: check if t is concrete
         t.assert_concrete()?;
-        Ok(Self(v, t, src))
+        Ok(Self(v.compact(), t.compact(), src))
     }
 
     pub fn try_unwrap_as_type<PI>(self) -> EvalResult<Rc<Type>, PI> {
@@ -1053,7 +1080,7 @@ impl EvalCtx {
                     arm_scope = arm_scope.bind(full_ev_name.name, matched_ev);
 
                     let mut ind_sig = ind.sig.clone();
-                    let mut index_pairs = ev_names.zip(indexes.iter().zip(arm_indexes.iter()));
+                    let mut index_pairs = ev_names.zip(arm_indexes.iter().zip(indexes.iter()));
                     loop {
                         match ind_sig.as_ref() {
                             Type::Fun { arg, ident: orig, ret } => {
@@ -1183,7 +1210,7 @@ impl EvalCtx {
                 let eq = self.eval(eq, scope, Rc::new(Type::Eq {
                     within: Rc::new(Type::Type { universe: None }),
                     lhs: Value::Type(Rc::new(Type::Hole)),
-                    rhs: Value::Type(hint),
+                    rhs: Value::Type(hint).compact(),
                 }), at, runner)?;
                 let (lhs, rhs, univ) = match eq.1.as_ref() {
                     Type::Eq {
@@ -1250,7 +1277,7 @@ impl EvalCtx {
                 let fun = self.eval(fun, scope, Rc::new(Type::Fun {
                     arg: arg_ty.clone(),
                     ident: 0,
-                    ret: within.clone(),
+                    ret: Rc::new(Type::Hole),
                 }), at, runner)?;
 
                 // Asserts ret is non dependent on fun
@@ -1262,8 +1289,12 @@ impl EvalCtx {
                 let lhs_ap_ty = ret.clone().substitute(*ident, lhs);
                 let rhs_ap_ty = ret.clone().substitute(*ident, rhs);
                 if lhs_ap_ty != rhs_ap_ty {
+                    log::info!("{:?}", lhs_ap_ty);
+                    log::info!("{:?}", rhs_ap_ty);
                     return Err(EvalError::DependentTransport { ty: fun.1 })
                 }
+
+                within.clone().try_unify(lhs_ap_ty.clone())?;
 
                 let lhs_ap = Value::Ap {
                     fun: Box::new(fun.0.clone()),
