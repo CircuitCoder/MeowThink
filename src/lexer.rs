@@ -41,6 +41,7 @@ pub enum Keyword {
     SelfType,
     Refl,
     Struct,
+    Import,
 }
 
 impl Keyword {
@@ -54,6 +55,7 @@ impl Keyword {
             "self" => Some(Self::SelfType),
             "refl" => Some(Self::Refl),
             "struct" => Some(Self::Struct),
+            "import" => Some(Self::Import),
             // "import"
             _ => None,
         }

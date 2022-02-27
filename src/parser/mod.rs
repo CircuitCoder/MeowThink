@@ -32,6 +32,9 @@ pub enum ParseError<'a> {
         token: Token<'a>,
     },
 
+    #[error("Absolute import cannot have ..")]
+    AbsPathUp,
+
     #[error("Unexpected EOF")]
     EOF,
 

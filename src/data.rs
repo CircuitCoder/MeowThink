@@ -1,3 +1,5 @@
+use std::fmt::Display;
+
 #[derive(Debug)]
 pub struct Expr<'a, T> {
     pub inner: ExprInner<'a, T>,
@@ -61,7 +63,9 @@ pub enum ExprInner<'a, T> {
     Field {
         parent: Box<Expr<'a, T>>,
         field: &'a str,
-    }
+    },
+
+    Import(Path<'a>),
 }
 
 impl<'a, T> ExprInner<'a, T> {
@@ -104,4 +108,32 @@ pub struct MatchArm<'a, T> {
 pub struct Ctor<'a, T> {
     pub name: &'a str,
     pub sig: Expr<'a, T>,
+}
+
+#[derive(Debug)]
+pub enum RelPathSeg<'a> {
+    Up,
+    Down(&'a str),
+}
+
+#[derive(Debug)]
+pub enum Path<'a> {
+    Absolute(Vec<&'a str>),
+    Relative(Vec<RelPathSeg<'a>>),
+}
+
+impl<'a> Display for Path<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Path::Absolute(segs) => write!(f, "{}", segs.join("."))?,
+            Path::Relative(segs) => for seg in segs{
+                match seg {
+                    RelPathSeg::Up => write!(f, ".")?,
+                    RelPathSeg::Down(seg) => write!(f, ".{}", seg)?,
+                }
+            }
+        }
+
+        Ok(())
+    }
 }

@@ -14,4 +14,4 @@ let s: struct {
   n = nat;
 };
 
-s.n
+s

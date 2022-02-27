@@ -1,43 +1,43 @@
-use std::{rc::Rc, collections::HashMap, fmt::Display};
+use std::{rc::Rc, collections::HashMap, fmt::Display, marker::PhantomData, path::PathBuf};
 
 use thiserror::Error;
 use std::fmt::Debug;
 
-use crate::data::{Expr, ExprInner, Name};
+use crate::{data::{Expr, ExprInner, Name}, exec::Runner};
 
 #[derive(Debug, PartialEq, Eq)]
-pub struct Ind<'a> {
-    sig: Rc<Type<'a>>,
-    // indexes: Vec<Rc<Type<'a>>>,
-    variants: im::HashMap<&'a str, Rc<Type<'a>>>,
+pub struct Ind {
+    sig: Rc<Type>,
+    // indexes: Vec<Rc<Type>>,
+    variants: im::HashMap<String, Rc<Type>>,
 }
 
-impl<'a> Ind<'a> {
-    pub fn substitute(&self, ident: ExtBindingIdent, with: &Value<'a>) -> Ind<'a> {
+impl Ind {
+    pub fn substitute(&self, ident: ExtBindingIdent, with: &Value) -> Ind {
         log::debug!("Ind sub: {:?} [{}/{:?}]", self, ident, with);
         Ind {
             sig: self.sig.clone().substitute(ident, with),
-            variants: self.variants.iter().map(|(name, orig)| (*name, orig.clone().substitute(ident, with))).collect(),
+            variants: self.variants.iter().map(|(name, orig)| (name.clone(), orig.clone().substitute(ident, with))).collect(),
         }
     }
 }
 
 #[derive(Debug, PartialEq, Clone, Eq)]
-pub enum IndPtr<'a> {
+pub enum IndPtr {
     SelfInvoc,
-    Complete(Rc<Ind<'a>>),
+    Complete(Rc<Ind>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Variant<'a> {
+pub struct Variant {
     captures: Vec<ExtBindingIdent>,
-    value: Value<'a>,
+    value: Value,
     // TODO: allow different ret in match
-    // ret: Type<'a>,
+    // ret: Type,
 }
 
-impl<'a> Variant<'a> {
-    pub fn substitute(&self, ident: ExtBindingIdent, with: &Value<'a>) -> Variant<'a> {
+impl Variant {
+    pub fn substitute(&self, ident: ExtBindingIdent, with: &Value) -> Variant {
         if self.captures.contains(&ident) {
             return self.clone();
         }
@@ -50,74 +50,74 @@ impl<'a> Variant<'a> {
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
-pub enum Value<'a> {
+pub enum Value {
     Refl,
-    TypedRefl(Rc<Type<'a>>),
-    Equality(Rc<Type<'a>>),
-    Type(Rc<Type<'a>>),
+    TypedRefl(Rc<Type>),
+    Equality(Rc<Type>),
+    Type(Rc<Type>),
     Lambda {
         ident: ExtBindingIdent,
         recursor: ExtBindingIdent,
-        body: Box<Evaluated<'a>>,
+        body: Box<Evaluated>,
     },
     PartiallyIndexedInd {
-        ind: IndPtr<'a>,
+        ind: IndPtr,
         // Maybe partially indexed
-        indexes: im::Vector<Value<'a>>,
+        indexes: im::Vector<Value>,
     },
     Inductive {
-        ind: Rc<Ind<'a>>,
-        ctor: &'a str,
+        ind: Rc<Ind>,
+        ctor: String,
         // Maybe partially applied
-        data: im::Vector<Value<'a>>,
+        data: im::Vector<Value>,
     },
-    Struct(im::HashMap<&'a str, Value<'a>>),
+    Struct(im::HashMap<String, Value>),
 
     // Delayed evaluation
     Ap {
-        fun: Box<Value<'a>>,
-        arg: Box<Value<'a>>,
+        fun: Box<Value>,
+        arg: Box<Value>,
     },
     Match {
-        matched: Box<Value<'a>>,
-        variants: im::HashMap<&'a str, Variant<'a>>,
+        matched: Box<Value>,
+        variants: im::HashMap<String, Variant>,
     },
     Field {
-        parent: Box<Value<'a>>,
-        field: &'a str,
+        parent: Box<Value>,
+        field: String,
     },
     Pending(ExtBindingIdent),
     Placeholder, // Hole in identity, hole in argument, etc
 }
 
 #[derive(PartialEq, Eq, Clone, Debug)]
-pub enum Type<'a> {
+pub enum Type {
     Hole,
-    Partial(Rc<Type<'a>>),
+    Partial(Rc<Type>),
 
     Type {
         universe: Option<usize>,
     },
     Eq {
-        within: Rc<Type<'a>>,
-        lhs: Value<'a>,
-        rhs: Value<'a>,
+        within: Rc<Type>,
+        lhs: Value,
+        rhs: Value,
     },
     Fun {
-        arg: Rc<Type<'a>>,
+        arg: Rc<Type>,
         ident: ExtBindingIdent,
-        ret: Rc<Type<'a>>,
+        ret: Rc<Type>,
     },
     FullyIndexedInd {
-        ind: IndPtr<'a>,
-        indexes: im::Vector<Value<'a>>,
+        ind: IndPtr,
+        indexes: im::Vector<Value>,
     },
-    Struct(im::HashMap<&'a str, Rc<Type<'a>>>),
+    Struct(im::HashMap<String, Rc<Type>>),
     // Ap, Match, Pending
-    Delayed(Value<'a>),
+    Delayed(Value),
 }
 
-impl<'a> Display for Type<'a> {
+impl Display for Type {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Type::Hole => write!(f, "_"),
@@ -155,14 +155,14 @@ impl<'a> Display for Type<'a> {
     }
 }
 
-impl<'a> From<Rc<Type<'a>>> for Value<'a> {
-    fn from(v: Rc<Type<'a>>) -> Self {
+impl From<Rc<Type>> for Value {
+    fn from(v: Rc<Type>) -> Self {
         Value::Type(v)
     }
 }
 
-impl<'a> Value<'a> {
-    pub fn substitute(&self, ident: ExtBindingIdent, with: &Value<'a>) -> Value<'a> {
+impl Value {
+    pub fn substitute(&self, ident: ExtBindingIdent, with: &Value) -> Value {
         match self {
             Value::Pending(self_ident) => if *self_ident == ident {
                 with.clone()
@@ -175,7 +175,7 @@ impl<'a> Value<'a> {
             },
             Value::Match { matched, variants } => Value::Match {
                 matched: Box::new(matched.substitute(ident, with)),
-                variants: variants.iter().map(|(ctor, variant)| (*ctor, variant.substitute(ident, with))).collect(),
+                variants: variants.iter().map(|(ctor, variant)| (ctor.clone(), variant.substitute(ident, with))).collect(),
             },
             Value::Equality(t) => Value::Equality(t.clone().substitute(ident, with)),
             Value::Type(t) => Value::Type(t.clone().substitute(ident, with)),
@@ -200,17 +200,17 @@ impl<'a> Value<'a> {
             Value::Inductive { ind, ctor, data } => {
                 Value::Inductive {
                     ind: Rc::new(ind.substitute(ident, with)),
-                    ctor: *ctor,
+                    ctor: ctor.clone(),
                     data: data.iter().map(|d| d.substitute(ident, with)).collect()
                 }
             },
             Value::Struct(fields) => {
                 Value::Struct(
-                    fields.iter().map(|(name, val)| (*name, val.substitute(ident, with))).collect()
+                    fields.iter().map(|(name, val)| (name.clone(), val.substitute(ident, with))).collect()
                 )
             },
             Value::Field { parent, field } => {
-                Value::Field { parent: Box::new(parent.substitute(ident, with)), field: *field }
+                Value::Field { parent: Box::new(parent.substitute(ident, with)), field: field.clone() }
             },
             Value::Placeholder => Value::Placeholder,
             Value::Refl => Value::Refl,
@@ -218,11 +218,11 @@ impl<'a> Value<'a> {
         }
     }
 
-    pub fn match_with(self, variants: im::HashMap<&'a str, Variant<'a>>) -> Value<'a> {
+    pub fn match_with(self, variants: im::HashMap<String, Variant>) -> Value {
         match self {
             Value::Inductive { ind, ctor, data } => {
                 // TODO: sanity check ind = matched
-                let variant = variants.get(ctor).unwrap();
+                let variant = variants.get(&ctor).unwrap();
                 assert_eq!(data.len(), variant.captures.len());
                 let body = data.into_iter().zip(variant.captures.iter()).fold(variant.value.clone(), |acc, (val, ident)| acc.substitute(*ident, &val));
                 body.progress()
@@ -235,7 +235,7 @@ impl<'a> Value<'a> {
         }
     }
 
-    pub fn ap_with(self, arg: Value<'a>) -> Value<'a> {
+    pub fn ap_with(self, arg: Value) -> Value {
         log::debug!("Ap: {:?} <- {:?}", self, arg);
         match self {
             Value::Lambda { ident, recursor, ref body } => {
@@ -267,10 +267,10 @@ impl<'a> Value<'a> {
         }
     }
 
-    pub fn field_with(self, field: &'a str) -> Value<'a> {
+    pub fn field_with(self, field: String) -> Value {
         match self {
             Value::Struct(mut fields) => {
-                fields.remove(field).unwrap()
+                fields.remove(&field).unwrap()
             },
             _ => Value::Field {
                 parent: Box::new(self),
@@ -279,7 +279,7 @@ impl<'a> Value<'a> {
         }
     }
 
-    pub fn try_unwrap_as_type<PI>(self) -> EvalResult<'a, Rc<Type<'a>>, PI> {
+    pub fn try_unwrap_as_type<PI>(self) -> EvalResult<Rc<Type>, PI> {
         match self {
             Value::Type(t) => Ok(t),
             Value::PartiallyIndexedInd{ ind, indexes } => {
@@ -292,7 +292,7 @@ impl<'a> Value<'a> {
         }
     }
 
-    pub fn progress(self) -> Value<'a> {
+    pub fn progress(self) -> Value {
         match self {
             Value::Equality(ty) => Value::Equality(ty.progress()),
             Value::Type(ty) => Value::Type(ty.progress()),
@@ -306,7 +306,7 @@ impl<'a> Value<'a> {
                 data: data.into_iter().map(Value::progress).collect(),
             },
             Value::Struct(fields) => Value::Struct(
-                fields.iter().map(|(name, val)| (*name, val.clone().progress())).collect()
+                fields.iter().map(|(name, val)| (name.clone(), val.clone().progress())).collect()
             ),
             Value::Pending(_) => self,
 
@@ -320,7 +320,7 @@ impl<'a> Value<'a> {
         }
     }
 
-    pub fn unify(&self, ano: &Value<'a>) -> Option<Value<'a>> {
+    pub fn unify(&self, ano: &Value) -> Option<Value> {
         if self == ano {
             Some(self.clone());
         }
@@ -340,7 +340,7 @@ impl<'a> Value<'a> {
         }
     }
 
-    pub fn promote_ind_type(self) -> Value<'a> {
+    pub fn promote_ind_type(self) -> Value {
         if let Value::PartiallyIndexedInd { ind, indexes } = &self {
             if let IndPtr::Complete(c) = ind {
                 assert!(c.sig.arity() == indexes.len());
@@ -350,7 +350,7 @@ impl<'a> Value<'a> {
         return self;
     }
 
-    pub fn demote_ind_type(self) -> Value<'a> {
+    pub fn demote_ind_type(self) -> Value {
         if let Value::Type(t) = &self {
             if let Type::FullyIndexedInd { ind, indexes } = &**t {
                 return Value::PartiallyIndexedInd { ind: ind.clone(), indexes: indexes.clone() };
@@ -360,7 +360,7 @@ impl<'a> Value<'a> {
     }
 }
 
-impl<'a> Display for Value<'a> {
+impl Display for Value {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Value::Equality(eq) => write!(f, "<eq, {:?}>", eq),
@@ -403,8 +403,8 @@ impl<'a> Display for Value<'a> {
     }
 }
 
-impl<'a> Type<'a> {
-    pub fn unify(self: Rc<Self>, ano: Rc<Type<'a>>) -> Option<Rc<Type<'a>>> {
+impl Type {
+    pub fn unify(self: Rc<Self>, ano: Rc<Type>) -> Option<Rc<Type>> {
         if self == ano {
             return Some(self);
         }
@@ -474,7 +474,7 @@ impl<'a> Type<'a> {
                 let mut ret = im::HashMap::new();
                 for (k, va) in fa {
                     if let Some(vb) = fb.get(k) {
-                        ret.insert(*k, va.clone().unify(vb.clone())?);
+                        ret.insert(k.clone(), va.clone().unify(vb.clone())?);
                     } else {
                         return None;
                     }
@@ -487,11 +487,12 @@ impl<'a> Type<'a> {
         }
     }
 
-    pub fn try_unify<PI>(self: Rc<Self>, ano: Rc<Type<'a>>) -> EvalResult<'a, Rc<Type<'a>>, PI> {
+    pub fn try_unify<PI>(self: Rc<Self>, ano: Rc<Type>) -> EvalResult<Rc<Type>, PI> {
         self.clone().unify(ano.clone()).ok_or_else(|| {
             EvalError::Ununifiable{
                 expected: self,
                 actual: ano,
+                _pi: PhantomData::default(),
             }
         })
     }
@@ -503,7 +504,7 @@ impl<'a> Type<'a> {
         }
     }
 
-    pub fn substitute(self: Rc<Self>, ident: ExtBindingIdent, with: &Value<'a>) -> Rc<Type<'a>> {
+    pub fn substitute(self: Rc<Self>, ident: ExtBindingIdent, with: &Value) -> Rc<Type> {
         log::debug!("Type {:?} [{}/{:?}]", self, ident, with);
         match self.as_ref() {
             Type::Hole => self.clone(),
@@ -532,7 +533,7 @@ impl<'a> Type<'a> {
             },
             Type::Struct(fields) => {
                 Rc::new(Type::Struct(
-                    fields.iter().map(|(name, val)| (*name, val.clone().substitute(ident, with))).collect()
+                    fields.iter().map(|(name, val)| (name.clone(), val.clone().substitute(ident, with))).collect()
                 ))
             },
             Type::Delayed(d) => d.substitute(ident, with).try_unwrap_as_type::<()>().unwrap(),
@@ -546,7 +547,7 @@ impl<'a> Type<'a> {
         }
     }
 
-    pub fn instantiate_self(self: Rc<Self>, ind: Rc<Ind<'a>>, top: bool) -> Rc<Type<'a>> {
+    pub fn instantiate_self(self: Rc<Self>, ind: Rc<Ind>, top: bool) -> Rc<Type> {
         // Assumes strict postivity
         match self.as_ref() {
             Type::Fun { arg, ident: sident, ret } => {
@@ -570,78 +571,81 @@ impl<'a> Type<'a> {
         }
     }
 
-    pub fn progress(self: Rc<Self>) -> Rc<Type<'a>> {
+    pub fn progress(self: Rc<Self>) -> Rc<Type> {
         // TODO: do we need to do anything here?
         self
     }
 
-    pub fn assert_concrete<PI>(&self) -> EvalResult<'a, (), PI> {
+    pub fn assert_concrete<PI>(&self) -> EvalResult<(), PI> {
         // FIXME: impl
         Ok(())
     }
 }
 
 #[derive(Error, Debug)]
-pub enum EvalError<'a, PI> {
+pub enum EvalError<PI> {
     #[error("Ununifiable types, expected {expected}, got {actual}")]
     Ununifiable {
-        expected: Rc<Type<'a>>,
-        actual: Rc<Type<'a>>,
+        expected: Rc<Type>,
+        actual: Rc<Type>,
+
+        // TODO: implement parser info
+        _pi: PhantomData<PI>,
     },
 
     #[error("Expected type, got {actual} with type {ty}")]
     TypeOnly {
-        actual: Value<'a>,
-        ty: Rc<Type<'a>>,
+        actual: Value,
+        ty: Rc<Type>,
     },
 
     #[error("Can only match inductive types, got {actual} with type {ty}")]
     NonIndMatch {
-        actual: Value<'a>,
-        ty: Rc<Type<'a>>,
+        actual: Value,
+        ty: Rc<Type>,
     },
 
     #[error("Can only select ctor of non-indexed inductive types, got {actual}")]
     NonIndCtor {
-        actual: Value<'a>,
+        actual: Value,
     },
 
     #[error("Ctor `{ctor}` not present in inductive types {ind:?}")]
     UndefinedCtor {
-        ctor: &'a str,
-        ind: Rc<Ind<'a>>,
+        ctor: String,
+        ind: Rc<Ind>,
     },
 
     #[error("Can only select field of structs, got {actual} of type {ty}")]
     NonStructField {
-        actual: Value<'a>,
-        ty: Rc<Type<'a>>,
+        actual: Value,
+        ty: Rc<Type>,
     },
 
     #[error("Field `{field}` not present in type {ty:?}")]
     UndefinedField {
-        field: &'a str,
-        ty: Rc<Type<'a>>,
+        field: String,
+        ty: Rc<Type>,
     },
 
     #[error("Matching arm for ctor `{ctor}` of {ind:?} got wrong number of data binding: got {actual}")]
     MatchWrongArity {
-        ctor: &'a str,
-        ind: Rc<Ind<'a>>,
+        ctor: String,
+        ind: Rc<Ind>,
         actual: usize,
     },
 
     #[error("Matching arm for ctor `{ctor}` of {ind:?} got wrong number of evidence: got {actual}")]
     MatchWrongEvidence {
-        ctor: &'a str,
-        ind: Rc<Ind<'a>>,
+        ctor: String,
+        ind: Rc<Ind>,
         actual: usize,
     },
 
     #[error("Ctor `{ctors:?}` missing when matching inductive types {ind:?}")]
     MatchNonExhaustive {
-        ctors: Vec<&'a str>,
-        ind: Rc<Ind<'a>>,
+        ctors: Vec<String>,
+        ind: Rc<Ind>,
     },
 
     #[error("`self` used outside of inductive defination")]
@@ -649,12 +653,13 @@ pub enum EvalError<'a, PI> {
 
     #[error("Undefined name / constructor: {name}")]
     Undefined {
-        name: &'a str,
+        name: String,
     },
 
     #[error("Unexpected type signature")]
     UnexpectedSig {
-        name: &'a Name<'a, PI>,
+        // name: &'a Name<'a, PI>,
+        name: String,
     },
 
     #[error("Unbounded recursion")]
@@ -662,16 +667,22 @@ pub enum EvalError<'a, PI> {
 
     #[error("Cannot cast with type: {ty}")]
     NonTyEqCast {
-        ty: Rc<Type<'a>>,
+        ty: Rc<Type>,
     },
 
     #[error("Cannot transport with dependent function: {ty}")]
     DependentTransport {
-        ty: Rc<Type<'a>>,
+        ty: Rc<Type>,
+    },
+
+    #[error("Error occured when processing import {path}: {error}")]
+    Import {
+        path: String,
+        error: anyhow::Error,
     },
 }
 
-type EvalResult<'a, T, PI> = Result<T, EvalError<'a, PI>>;
+type EvalResult<T, PI> = Result<T, EvalError<PI>>;
 
 /// Distinguishing different external binding
 type ExtBindingIdent = usize;
@@ -699,20 +710,20 @@ pub enum Source {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Evaluated<'a>(
-    pub Value<'a>,
-    pub Rc<Type<'a>>,
+pub struct Evaluated(
+    pub Value,
+    pub Rc<Type>,
     pub Source,
 );
 
-impl<'a> Evaluated<'a> {
-    pub fn create<PI>(v: Value<'a>, t: Rc<Type<'a>>, src: Source) -> EvalResult<'a, Self, PI> {
+impl Evaluated {
+    pub fn create<PI>(v: Value, t: Rc<Type>, src: Source) -> EvalResult<Self, PI> {
         // TODO: check if t is concrete
         t.assert_concrete()?;
         Ok(Self(v, t, src))
     }
 
-    pub fn try_unwrap_as_type<PI>(self) -> EvalResult<'a, Rc<Type<'a>>, PI> {
+    pub fn try_unwrap_as_type<PI>(self) -> EvalResult<Rc<Type>, PI> {
         // TODO: return universe
         match self.1.as_ref() {
             Type::Type { .. } => {},
@@ -721,7 +732,7 @@ impl<'a> Evaluated<'a> {
         self.0.try_unwrap_as_type()
     }
 
-    pub fn substitute(&self, ident: ExtBindingIdent, with: &Value<'a>) -> Evaluated<'a> {
+    pub fn substitute(&self, ident: ExtBindingIdent, with: &Value) -> Evaluated {
         Evaluated(
             self.0.substitute(ident, with),
             self.1.clone().substitute(ident, with),
@@ -732,19 +743,19 @@ impl<'a> Evaluated<'a> {
 
 #[derive(Clone, Default)]
 struct Scope<'a> {
-    bindings: im::HashMap<&'a str, Evaluated<'a>>,
-    ind_type: Option<Rc<Type<'a>>>,
+    bindings: im::HashMap<&'a str, Evaluated>,
+    ind_type: Option<Rc<Type>>,
 }
 
 impl<'a> Scope<'a> {
-    pub fn bind(&self, name: &'a str, bounded: Evaluated<'a>) -> Self {
+    pub fn bind(&self, name: &'a str, bounded: Evaluated) -> Self {
         Scope {
             bindings: self.bindings.update(name, bounded),
             ind_type: self.ind_type.clone(),
         }
     }
 
-    pub fn inside_ind(&self, ty: Rc<Type<'a>>) -> Self {
+    pub fn inside_ind(&self, ty: Rc<Type>) -> Self {
         Scope {
             bindings: self.bindings.clone(),
             ind_type: Some(ty),
@@ -753,31 +764,33 @@ impl<'a> Scope<'a> {
 }
 
 #[derive(Default)]
-struct EvalCtx {
+pub struct EvalCtx {
     ticket_gen: usize,
 }
 
 impl EvalCtx {
     // TODO: ensure hint and result type is always unifiable
-    pub fn eval<'a, PI: Debug>(
+    fn eval<'a, PI: Debug>(
         &mut self,
         expr: &'a Expr<'a, PI>,
         scope: &Scope<'a>,
-        hint: Rc<Type<'a>>,
-    ) -> EvalResult<'a, Evaluated<'a>, PI> {
+        hint: Rc<Type>,
+        at: &PathBuf,
+        runner: &mut Runner,
+    ) -> EvalResult<Evaluated, PI> {
         log::debug!("Eval: {:?}", expr);
         match &expr.inner {
             ExprInner::PartialType(inner) => {
                 let inner_hint = hint.try_unify(Rc::new(Type::Type{ universe: None }))?;
 
-                let inner = self.eval(inner.as_ref(), scope, inner_hint)?;
+                let inner = self.eval(inner.as_ref(), scope, inner_hint, at, runner)?;
                 let Evaluated(_, t, src) = inner.clone();
                 let wrapped = Type::Partial(inner.try_unwrap_as_type()?);
                 Evaluated::create(Value::Type(Rc::new(wrapped)), t, src)
             },
             ExprInner::Ind { sig, ctors } => {
                 let interface = if let Some(sig) = sig {
-                    let sig_val = self.eval_hint(sig.as_ref(), scope)?;
+                    let sig_val = self.eval_hint(sig.as_ref(), scope, at, runner)?;
                     // TODO: check if sig is a type
                     hint.try_unify(sig_val)?
                 } else {
@@ -790,11 +803,11 @@ impl EvalCtx {
                 let inner_scope = scope.inside_ind(interface.clone());
                 let mut mapped_ctors = im::HashMap::new();
                 for ctor in ctors.iter() {
-                    let ctor_type_value = self.eval_hint(&ctor.sig, &inner_scope)?;
+                    let ctor_type_value = self.eval_hint(&ctor.sig, &inner_scope, at, runner)?;
                      
                     // TODO: check strict positivity and ctor yield type
                     // TODO: check ctor is inside the required universe
-                    mapped_ctors.insert(ctor.name, ctor_type_value);
+                    mapped_ctors.insert(ctor.name.to_owned(), ctor_type_value);
                 }
 
                 let ind = IndPtr::Complete(Rc::new(Ind { variants: mapped_ctors, sig: interface.clone() }));
@@ -812,7 +825,7 @@ impl EvalCtx {
                     }
                     _ => (None, f.input.as_ref()),
                 };
-                let input_type_val = self.eval_hint(input_type, scope)?;
+                let input_type_val = self.eval_hint(input_type, scope, at, runner)?;
 
                 // Update scope before passing down for named dependent type variable
                 let inner_scope_data;
@@ -823,7 +836,7 @@ impl EvalCtx {
                     inner_scope_data = scope.bind(arg_name, bounded);
                     inner_scope = &inner_scope_data;
                 }
-                let ret_type_val = self.eval(f.output.as_ref(), inner_scope, Rc::new(Type::Type{ universe: None }))?.try_unwrap_as_type()?;
+                let ret_type_val = self.eval(f.output.as_ref(), inner_scope, Rc::new(Type::Type{ universe: None }), at, runner)?.try_unwrap_as_type()?;
                 let self_type_val = Rc::new(Type::Fun{
                     arg: input_type_val,
                     ident: arg_ident,
@@ -849,7 +862,7 @@ impl EvalCtx {
                     arg_ident = self.count_external();
                 }
                 let arg_type = if let Some(sig) = arg.sig.as_ref() {
-                    self.eval_hint(sig, scope)?.try_unify(arg_hint.clone())?
+                    self.eval_hint(sig, scope, at, runner)?.try_unify(arg_hint.clone())?
                 } else {
                     arg_hint.clone()
                 };
@@ -860,7 +873,7 @@ impl EvalCtx {
 
                 // Evaluate ret type
                 let ret_type= if let Some(sig) = ret.as_ref() {
-                    self.eval_hint(sig, &ret_scope)?.try_unify(ret_hint.clone())?
+                    self.eval_hint(sig, &ret_scope, at, runner)?.try_unify(ret_hint.clone())?
                 } else {
                     ret_hint.clone()
                 };
@@ -880,7 +893,7 @@ impl EvalCtx {
                 }
 
                 // Do shadowed eval / type check in body
-                let body_eval = self.eval(body.as_ref(), &inner_scope, ret_type)?;
+                let body_eval = self.eval(body.as_ref(), &inner_scope, ret_type, at, runner)?;
                 let body_ty = body_eval.1.clone();
 
                 let self_val = Value::Lambda {
@@ -899,19 +912,19 @@ impl EvalCtx {
             },
             ExprInner::Binding { binding, rest } => {
                 let binding_hint = if let Some(sig) = &binding.name.sig {
-                    self.eval_hint(sig, scope)?
+                    self.eval_hint(sig, scope, at, runner)?
                 } else {
                     Rc::new(Type::Hole)
                 };
-                let evaled = self.eval(&binding.val, scope, binding_hint)?;
+                let evaled = self.eval(&binding.val, scope, binding_hint, at, runner)?;
                 let inner_scope = scope.bind(binding.name.name, evaled);
-                self.eval(rest.as_ref(), &inner_scope, hint)
+                self.eval(rest.as_ref(), &inner_scope, hint, at, runner)
             },
             ExprInner::Name(name) => {
                 if name.sig.is_some() {
-                    return Err(EvalError::UnexpectedSig{ name: name.as_ref() })
+                    return Err(EvalError::UnexpectedSig{ name: name.name.to_owned() })
                 }
-                let value = scope.bindings.get(name.name).cloned().ok_or(EvalError::Undefined{ name: name.name })?;
+                let value = scope.bindings.get(name.name).cloned().ok_or(EvalError::Undefined{ name: name.name.to_owned() })?;
                 hint.try_unify(value.1.clone())?;
                 Ok(value)
             },
@@ -922,14 +935,14 @@ impl EvalCtx {
                     arg: Rc::new(Type::Hole),
                     ident: 0,
                     ret: Rc::new(Type::Hole),
-                }))?;
+                }), at, runner)?;
 
                 log::debug!("Applying function {:#?}", f_eval);
                 let (arg_type, arg_ident, ret_type) = match f_eval.1.as_ref() {
                     Type::Fun { arg, ident, ret } => (arg, *ident, ret),
                     _ => panic!("Why did ap get a {:?}", f_eval.1),
                 };
-                let arg_eval = self.eval(arg, scope, arg_type.clone())?;
+                let arg_eval = self.eval(arg, scope, arg_type.clone(), at, runner)?;
                 // TODO: assert arg type concrete
                 let ret_type = ret_type.clone().substitute(arg_ident, &arg_eval.0);
                 let ret_type = ret_type.try_unify(hint)?;
@@ -954,7 +967,7 @@ impl EvalCtx {
             },
             ExprInner::Match { matched, arms } => {
                 // Build pendings
-                let Evaluated(matched_val, matched_type, matched_src) = self.eval(matched.as_ref(), scope, Rc::new(Type::Hole))?;
+                let Evaluated(matched_val, matched_type, matched_src) = self.eval(matched.as_ref(), scope, Rc::new(Type::Hole), at, runner)?;
                 let (ind, indexes) = match matched_type.as_ref() {
                     Type::FullyIndexedInd { ind, indexes } => {
                         match ind {
@@ -985,14 +998,14 @@ impl EvalCtx {
                         panic!("Currently don't supports typed match");
                     }
 
-                    let mut variant_sig = remaining.remove(arm.ctor).ok_or(EvalError::UndefinedCtor { ctor: arm.ctor, ind: ind.clone() })?;
+                    let mut variant_sig = remaining.remove(arm.ctor).ok_or(EvalError::UndefinedCtor { ctor: arm.ctor.to_owned(), ind: ind.clone() })?;
 
                     let arity = variant_sig.arity();
                     if arity != arm.data.len() {
-                        return Err(EvalError::MatchWrongArity { actual: arm.data.len(), ctor: arm.ctor, ind: ind.clone() })
+                        return Err(EvalError::MatchWrongArity { actual: arm.data.len(), ctor: arm.ctor.to_owned(), ind: ind.clone() })
                     }
                     if ind_arity + 1 != arm.ev.len() {
-                        return Err(EvalError::MatchWrongEvidence { actual: arm.ev.len(), ctor: arm.ctor, ind: ind.clone() })
+                        return Err(EvalError::MatchWrongEvidence { actual: arm.ev.len(), ctor: arm.ctor.to_owned(), ind: ind.clone() })
                     }
 
                     // Generate datum bindings
@@ -1023,7 +1036,7 @@ impl EvalCtx {
                     let data_arm_scope = arm_scope.clone();
                     let constructed = Value::Inductive {
                         ind: ind.clone(),
-                        ctor: arm.ctor,
+                        ctor: arm.ctor.to_owned(),
                         data: data_idents.iter().cloned().map(|ident| Value::Pending(ident)).collect()
                     };
                     let mut matched_eq = Rc::new(Type::Eq {
@@ -1034,7 +1047,7 @@ impl EvalCtx {
                     let mut ev_names = arm.ev.iter();
                     let full_ev_name = ev_names.next().unwrap();
                     if let Some(sig) = full_ev_name.sig.as_ref(){
-                        matched_eq = self.eval_hint(sig, &data_arm_scope)?.try_unify(matched_eq)?;
+                        matched_eq = self.eval_hint(sig, &data_arm_scope, at, runner)?.try_unify(matched_eq)?;
                     }
                     let matched_ev = Evaluated(Value::Equality(matched_eq.clone()), matched_eq, Source::Constructed);
                     arm_scope = arm_scope.bind(full_ev_name.name, matched_ev);
@@ -1052,7 +1065,7 @@ impl EvalCtx {
                                     rhs: rhs.clone(),
                                 });
                                 if let Some(sig) = ev_name.sig.as_ref(){
-                                    ev_ty = self.eval_hint(sig, &data_arm_scope)?.try_unify(ev_ty)?;
+                                    ev_ty = self.eval_hint(sig, &data_arm_scope, at, runner)?.try_unify(ev_ty)?;
                                 }
                                 let ev = Evaluated(Value::Equality(ev_ty.clone()), ev_ty, Source::Constructed);
                                 arm_scope = arm_scope.bind(ev_name.name, ev);
@@ -1064,7 +1077,7 @@ impl EvalCtx {
                         }
                     }
 
-                    let body = self.eval(&arm.body, &arm_scope, cur_hint.clone())?;
+                    let body = self.eval(&arm.body, &arm_scope, cur_hint.clone(), at, runner)?;
                     cur_hint = cur_hint.try_unify(body.1.clone())?;
                     evaluated_arms.insert(arm.ctor, (data_idents, body));
                 }
@@ -1087,9 +1100,9 @@ impl EvalCtx {
 
                 // Check if all variants have same result type
                 cur_hint.assert_concrete()?;
-                let variants: EvalResult<'a, im::HashMap<_, _>, PI> = evaluated_arms.into_iter().map(|(name, (captures, eval))| {
+                let variants: EvalResult<im::HashMap<_, _>, PI> = evaluated_arms.into_iter().map(|(name, (captures, eval))| {
                     cur_hint.clone().try_unify(eval.1)?;
-                    Ok((name, Variant {
+                    Ok((name.to_owned(), Variant {
                         captures,
                         value: eval.0,
                     }))
@@ -1105,7 +1118,7 @@ impl EvalCtx {
                 Evaluated::create(val, cur_hint, src)
             },
             ExprInner::CtorOf { parent, variant } => {
-                let parent = self.eval(parent.as_ref(), scope, Rc::new(Type::Hole))?;
+                let parent = self.eval(parent.as_ref(), scope, Rc::new(Type::Hole), at, runner)?;
                 let demoted = parent.0.demote_ind_type();
                 let ind = match demoted {
                     Value::PartiallyIndexedInd { ind, indexes } if indexes.len() == 0 => {
@@ -1119,14 +1132,14 @@ impl EvalCtx {
                     },
                 };
 
-                let ctor_type = ind.variants.get(variant).ok_or(EvalError::UndefinedCtor { ctor: *variant, ind: ind.clone() })?;
+                let ctor_type = ind.variants.get(*variant).ok_or(EvalError::UndefinedCtor { ctor: (*variant).to_owned(), ind: ind.clone() })?;
                 let ctor_type = ctor_type.clone().instantiate_self(ind.clone(), true);
                 let ctor_type = ctor_type.try_unify(hint)?;
 
                 Evaluated::create(
                     Value::Inductive {
                         ind,
-                        ctor: *variant,
+                        ctor: (*variant).to_owned(),
                         data: im::Vector::new(),
                     },
                     ctor_type,
@@ -1171,7 +1184,7 @@ impl EvalCtx {
                     within: Rc::new(Type::Type { universe: None }),
                     lhs: Value::Type(Rc::new(Type::Hole)),
                     rhs: Value::Type(hint),
-                }))?;
+                }), at, runner)?;
                 let (lhs, rhs, univ) = match eq.1.as_ref() {
                     Type::Eq {
                         within,
@@ -1189,7 +1202,7 @@ impl EvalCtx {
                 };
 
                 // TODO: check universe
-                let mut val = self.eval(orig, scope, lhs.clone())?;
+                let mut val = self.eval(orig, scope, lhs.clone(), at, runner)?;
                 // Fixme: check lhs and orig type is the same
                 if val.1 != lhs {
                     println!("evaluated type: {}", val.1);
@@ -1221,7 +1234,7 @@ impl EvalCtx {
                     within: Rc::new(Type::Hole),
                     lhs: Value::Placeholder,
                     rhs: Value::Placeholder,
-                }))?;
+                }), at, runner)?;
 
                 let (lhs, rhs, arg_ty) = match eq.1.as_ref() {
                     Type::Eq {
@@ -1238,7 +1251,7 @@ impl EvalCtx {
                     arg: arg_ty.clone(),
                     ident: 0,
                     ret: within.clone(),
-                }))?;
+                }), at, runner)?;
 
                 // Asserts ret is non dependent on fun
                 let (ident, ret) = match fun.1.as_ref() {
@@ -1271,8 +1284,8 @@ impl EvalCtx {
                 Evaluated::create(Value::Equality(ret_ty.clone()), ret_ty, Source::Constructed)
             },
             ExprInner::Eq { lhs, rhs } => {
-                let lhs = self.eval(lhs, scope, Rc::new(Type::Hole))?;
-                let rhs = self.eval(rhs, scope, lhs.1.clone())?;
+                let lhs = self.eval(lhs, scope, Rc::new(Type::Hole), at, runner)?;
+                let rhs = self.eval(rhs, scope, lhs.1.clone(), at, runner)?;
 
                 let within = rhs.1.clone();
                 let eq = Rc::new(Type::Eq {
@@ -1294,10 +1307,10 @@ impl EvalCtx {
                 let mut ret = im::HashMap::new();
                 for f in fields {
                     let v = f.sig.as_ref()
-                        .map(|s| self.eval(s, scope, Rc::new(Type::Type{ universe: None })))
+                        .map(|s| self.eval(s, scope, Rc::new(Type::Type{ universe: None }), at, runner))
                         .map(|e| e.and_then(|e| e.0.try_unwrap_as_type())).transpose()?
                         .unwrap_or_else(|| Rc::new(Type::Hole));
-                    ret.insert(f.name, v);
+                    ret.insert(f.name.to_owned(), v);
                 }
 
                 // TODO: check universe
@@ -1311,11 +1324,11 @@ impl EvalCtx {
                 let mut field_hints = im::HashMap::new();
                 for binding in fields {
                     let sig = if let Some(sig) = &binding.name.sig {
-                        self.eval_hint(sig, scope)?
+                        self.eval_hint(sig, scope, at, runner)?
                     } else {
                         Rc::new(Type::Hole)
                     };
-                    field_hints.insert(binding.name.name, sig);
+                    field_hints.insert(binding.name.name.to_owned(), sig);
                 }
                 let unified = hint.try_unify(Rc::new(Type::Struct(field_hints)))?;
                 let mut field_hints = match &*unified {
@@ -1325,27 +1338,27 @@ impl EvalCtx {
 
                 let mut values = im::HashMap::new();
                 for binding in fields {
-                    let hint = field_hints.get(&binding.name.name).unwrap();
-                    let evaled = self.eval(&binding.val, scope, hint.clone())?;
-                    values.insert(binding.name.name, evaled.0);
-                    field_hints.insert(binding.name.name, evaled.1);
+                    let hint = field_hints.get(binding.name.name).unwrap();
+                    let evaled = self.eval(&binding.val, scope, hint.clone(), at, runner)?;
+                    values.insert(binding.name.name.to_owned(), evaled.0);
+                    field_hints.insert(binding.name.name.to_owned(), evaled.1);
                 }
 
                 Evaluated::create(Value::Struct(values), Rc::new(Type::Struct(field_hints)), Source::Constructed)
             },
 
             ExprInner::Field { parent, field } => {
-                let parent_eval = self.eval(parent.as_ref(), scope, Rc::new(Type::Hole))?;
+                let parent_eval = self.eval(parent.as_ref(), scope, Rc::new(Type::Hole), at, runner)?;
                 let field_types = match &*parent_eval.1 {
                     &Type::Struct(ref s) => {
                         s
                     },
                     _ => return Err(EvalError::NonStructField { actual: parent_eval.0, ty: parent_eval.1 }),
                 };
-                let field_ty = field_types.get(field).ok_or_else(|| EvalError::UndefinedField { field: *field, ty: parent_eval.1.clone() })?;
+                let field_ty = field_types.get(*field).ok_or_else(|| EvalError::UndefinedField { field: (*field).to_owned(), ty: parent_eval.1.clone() })?;
                 let field_ty = hint.try_unify(field_ty.clone())?;
 
-                let val = parent_eval.0.field_with(*field);
+                let val = parent_eval.0.field_with((*field).to_owned());
 
                 let src = match parent_eval.2 {
                     Source::External { ident: source } | Source::Destructed { source } => Source::Destructed { source },
@@ -1353,27 +1366,27 @@ impl EvalCtx {
                 };
 
                 Evaluated::create(val, field_ty, src)
-            }
+            },
+            ExprInner::Import(path) => {
+                runner.run_import(at, path).map_err(|error| EvalError::Import { path: format!("{}", path), error })
+            },
         }
     }
 
-    pub fn eval_hint<'a, PI: Debug>(&mut self, sig: &'a Expr<'a, PI>, scope: &Scope<'a>) -> EvalResult<'a, Rc<Type<'a>>, PI> {
-        let evaluated = self.eval(sig, scope, Rc::new(Type::Type{ universe: None }))?;
+    pub fn eval_hint<'a, PI: Debug>(&mut self, sig: &'a Expr<'a, PI>, scope: &Scope<'a>, at: &PathBuf, runner: &mut Runner) -> EvalResult<Rc<Type>, PI> {
+        let evaluated = self.eval(sig, scope, Rc::new(Type::Type{ universe: None }), at, runner)?;
         // TODO: check is type
         evaluated.try_unwrap_as_type()
     }
 
-    fn count_external<'a>(&mut self) -> ExtBindingIdent {
+    fn count_external(&mut self) -> ExtBindingIdent {
         self.ticket_gen += 1;
         self.ticket_gen
     }
-}
 
-pub fn eval_top<'a, PI: Debug>(
-    expr: &'a Expr<'a, PI>,
-) -> EvalResult<'a, Evaluated<'a>, PI> {
-    let mut ctx = EvalCtx::default();
-    let scope = Scope::default();
-    let hint = Rc::new(Type::Hole);
-    ctx.eval(expr, &scope, hint)
+    pub fn eval_top<'a, PI: Debug>(&mut self, expr: &'a Expr<'a, PI>, at: &PathBuf, runner: &mut Runner) -> EvalResult<Evaluated, PI> {
+        let scope = Scope::default();
+        let hint = Rc::new(Type::Hole);
+        self.eval(expr, &scope, hint, at, runner)
+    }
 }

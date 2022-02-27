@@ -85,6 +85,7 @@ pub fn parse_expr<'a, I: Iterator<Item = Token<'a>>>(tokens: &mut Peekable<I>, p
             },
             Keyword::SelfType => ExprInner::SelfInvoc.with(()),
             Keyword::Refl => ExprInner::ReflInvoc.with(()),
+            Keyword::Import => ExprInner::Import(parse_import_tail(tokens)?).with(()),
         },
         TokenInner::Symb(op) | TokenInner::Word(op) => {
             if op == "\\" {
@@ -436,4 +437,56 @@ pub fn parse_struct_type_body<'a, I: Iterator<Item = Token<'a>>>(tokens: &mut Pe
     }
 
     Ok(fields)
+}
+
+pub fn parse_import_tail<'a, I: Iterator<Item = Token<'a>>>(tokens: &mut Peekable<I>) -> ParseResult<'a, Path<'a>> {
+    let mut segs = Vec::new();
+    loop {
+        let cur = match tokens.peek() {
+            Some(t) => if let TokenInner::Word(w) = t.inner {
+                tokens.next();
+                Some(w)
+            } else {
+                None
+            },
+            _ => None,
+        };
+
+        let at_end = match tokens.peek() {
+            Some(t) => match t.inner {
+                TokenInner::Symb(".") => {
+                    tokens.next();
+                    false
+                },
+                _ => true,
+            },
+            _ => true,
+        };
+        if at_end && !cur.is_some() {
+            if let Some(token) = tokens.next() {
+                return Err(ParseError::UnexpectedToken { token })
+            } else {
+                return Err(ParseError::EOF)
+            }
+        }
+
+        segs.push(cur);
+        if at_end {
+            break;
+        }
+    }
+
+    let is_abs = segs.first().unwrap().is_some();
+    let iter = segs.iter();
+    if is_abs {
+        let segs: Result<Vec<_>, _> = segs.into_iter().map(|s| s.ok_or(ParseError::AbsPathUp)).collect();
+        let segs = segs?;
+        Ok(Path::Absolute(segs))
+    } else {
+        let segs = segs.into_iter().skip(1).map(|s| match s {
+            Some(s) => RelPathSeg::Down(s),
+            None => RelPathSeg::Up,
+        }).collect();
+        Ok(Path::Relative(segs))
+    }
 }
