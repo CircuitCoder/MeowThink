@@ -1,0 +1,25 @@
+{
+    "name": "meowthink-syntax",
+    "displayName": "MeowThink-syntax",
+    "description": "Syntax for MeowThink",
+    "version": "0.0.1",
+    "engines": {
+        "vscode": "^1.63.0"
+    },
+    "categories": [
+        "Programming Languages"
+    ],
+    "contributes": {
+        "languages": [{
+            "id": "meowthink",
+            "aliases": ["MeowThink", "meowthink"],
+            "extensions": [".mtk"],
+            "configuration": "./language-configuration.json"
+        }],
+        "grammars": [{
+            "language": "meowthink",
+            "scopeName": "source.mtk",
+            "path": "./syntaxes/meowthink.tmLanguage.json"
+        }]
+    }
+}

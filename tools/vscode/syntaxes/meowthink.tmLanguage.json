@@ -1,0 +1,24 @@
+{
+	"$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+	"name": "MeowThink",
+	"patterns": [
+		{
+			"include": "#patterns"
+		}
+	],
+	"repository": {
+		"patterns": {
+			"patterns": [{
+				"name": "storage.type.meowthink",
+				"match": "\\b(ind|struct)\\b"
+			}, {
+				"name": "keyword.control.meowthink",
+				"match": "\\b(let|match|import|type)\\b"
+			}, {
+				"name": "variable.language.meowthink",
+				"match": "\\b(refl|self)\\b"
+			}]
+		}
+	},
+	"scopeName": "source.mtk"
+}
